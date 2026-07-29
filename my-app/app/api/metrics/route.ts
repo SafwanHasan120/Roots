@@ -46,8 +46,6 @@ export async function GET() {
           rowsFetched: sourceInternships.length,
           parseSuccessRate: Math.round(parseSuccessRate * 10000) / 10000,
           validationRate: Math.round(parseSuccessRate * 10000) / 10000,
-          lastScraped: source.lastScraped,
-          failCount: source.failCount,
           enabled: source.enabled,
         });
       });

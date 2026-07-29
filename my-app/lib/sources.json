@@ -4,17 +4,13 @@
       "id": "vanshb03",
       "name": "vanshb03/Summer2027-Internships",
       "url": "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md",
-      "enabled": true,
-      "lastScraped": 0,
-      "failCount": 0
+      "enabled": true
     },
     {
       "id": "sndsh404",
       "name": "sndsh404/summer-2027-internships",
       "url": "https://raw.githubusercontent.com/sndsh404/summer-2027-internships/main/README.md",
-      "enabled": true,
-      "lastScraped": 0,
-      "failCount": 0
+      "enabled": true
     }
   ]
 }

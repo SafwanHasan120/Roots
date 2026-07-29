@@ -17,8 +17,8 @@ export interface SourceMetrics {
   rowsFetched: number;
   parseSuccessRate: number;
   validationRate: number;
-  lastScraped: number;
-  failCount: number;
+  lastScraped?: number;
+  failCount?: number;
   enabled: boolean;
 }
 
@@ -175,7 +175,7 @@ export function checkAlerts(metrics: ScraperMetrics): string[] {
   }
 
   metrics.sourceMetrics.forEach((source) => {
-    if (source.failCount > ALERT_THRESHOLDS.maxSourceFailCount) {
+    if (source.failCount !== undefined && source.failCount > ALERT_THRESHOLDS.maxSourceFailCount) {
       alerts.push(`Source ${source.id} has ${source.failCount} consecutive failures`);
     }
   });

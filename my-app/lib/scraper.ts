@@ -3,7 +3,7 @@ import { prestigeOf } from './companies';
 import { normalizeCompanyName } from './companyNormalizer';
 import { detectExpiration } from './expirationDetector';
 import { fetchWithRetry } from './retryManager';
-import { initRateLimiter } from './rateLimiter';
+import { initRateLimiter, rateLimitedFetch } from './rateLimiter';
 import sourcesData from './sources.json';
 
 // Initialize rate limiter on module load
@@ -86,10 +86,17 @@ export function parseDate(str: string): number {
     const month = MONTHS[m[1]];
     const num = parseInt(m[2], 10);
     // "Jul 2025" → year; "Jul 01" → day of current year.
+    let date: Date;
     if (num > 31) {
-      return new Date(num, month, 1).getTime();
+      date = new Date(num, month, 1);
+    } else {
+      date = new Date(new Date().getFullYear(), month, num);
+      // If date is more than 30 days in future, subtract a year (New Year edge case)
+      if (date.getTime() - Date.now() > 30 * 24 * 60 * 60 * 1000) {
+        date = new Date(date.getFullYear() - 1, month, num);
+      }
     }
-    return new Date(new Date().getFullYear(), month, num).getTime();
+    return date.getTime();
   }
 
   return 0;
@@ -137,6 +144,29 @@ function detectColumns(header: string[]): ColMap | null {
   // Need at least a company + role to be a usable internship table.
   if (map.company < 0 || map.role < 0) return null;
   return map;
+}
+
+function normalizeAppUrl(url: string): string {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    // lowercase host, strip utm_*/gh_src/ref/source query params, trailing slash
+    parsed.hostname = parsed.hostname.toLowerCase();
+    const params = new URLSearchParams(parsed.search);
+    params.delete('utm_source');
+    params.delete('utm_medium');
+    params.delete('utm_campaign');
+    params.delete('utm_content');
+    params.delete('utm_term');
+    params.delete('gh_src');
+    params.delete('ref');
+    params.delete('source');
+    parsed.search = params.toString();
+    parsed.pathname = parsed.pathname.replace(/\/$/, '');
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 function parseMarkdown(md: string, source: string): Internship[] {
@@ -200,9 +230,10 @@ function parseMarkdown(md: string, source: string): Internship[] {
       .trim();
 
     const appLink = extractMarkdownLink(cell(cols.appUrl));
-    const appUrl = appLink.url;
+    const appUrl = normalizeAppUrl(appLink.url);
 
     const dateRaw = stripEmoji(cell(cols.date).replace(/<[^>]+>/g, '')).trim();
+    const dateMs = parseDate(dateRaw);
 
     if (!role && !appUrl) continue;
 
@@ -216,7 +247,7 @@ function parseMarkdown(md: string, source: string): Internship[] {
       location: location || '—',
       appUrl,
       datePosted: dateRaw || '—',
-      dateMs: parseDate(dateRaw),
+      dateMs,
       prestigeScore: prestigeOf(company),
       source,
     });
@@ -225,36 +256,225 @@ function parseMarkdown(md: string, source: string): Internship[] {
   return out;
 }
 
-async function scrapeRepo(url: string): Promise<Internship[]> {
-  const res = await fetchWithRetry(url, {
-    next: { revalidate: 3600 },
-    maxRetries: 3,
-    timeoutMs: 10000,
-  });
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-  const md = await res.text();
-  const parsed = parseMarkdown(md, repoSlug(url));
+async function scrapeRepo(url: string, scrapeState?: any, useNoStore: boolean = false): Promise<{ listings: Internship[]; etag?: string; sha?: string }> {
+  const slug = repoSlug(url);
+  const state = scrapeState?.perSource?.[slug] || {};
+  const headers: Record<string, string> = {};
 
-  // Enhance with normalization and expiration detection
-  return parsed.map((internship) => ({
-    ...internship,
-    expirationReason: detectExpiration(internship.dateMs).reason,
-    isExpired: detectExpiration(internship.dateMs).isExpired,
-  }));
-}
+  // Conditional request with etag
+  if (state.etag) {
+    headers['If-None-Match'] = state.etag;
+  }
 
-export async function scrapeAllRepos(): Promise<Internship[]> {
-  const repos = loadSources();
-  const results = await Promise.allSettled(repos.map(scrapeRepo));
-  const all: Internship[] = [];
+  let md = '';
+  let etag: string | undefined;
+  let sha: string | undefined;
 
-  for (const r of results) {
-    if (r.status === 'fulfilled') {
-      all.push(...r.value);
-    } else {
-      console.error('Scrape failed:', r.reason);
+  // For GitHub sources, check commit SHA first
+  if (url.includes('raw.githubusercontent.com')) {
+    const match = url.match(/github\.com\/([^/]+)\/([^/]+)|githubusercontent\.com\/([^/]+)\/([^/]+)/);
+    if (match) {
+      const owner = match[1] || match[3];
+      const repo = match[2] || match[4];
+      try {
+        const commitRes = await rateLimitedFetch(
+          `https://api.github.com/repos/${owner}/${repo}/commits?path=README.md&per_page=1`,
+          () =>
+            fetchWithRetry(
+              `https://api.github.com/repos/${owner}/${repo}/commits?path=README.md&per_page=1`,
+              {
+                headers: process.env.GITHUB_TOKEN
+                  ? { Authorization: `token ${process.env.GITHUB_TOKEN}` }
+                  : {},
+                maxRetries: 2,
+                timeoutMs: 5000,
+              }
+            )
+        );
+        if (commitRes.ok) {
+          const commits = await commitRes.json();
+          if (commits[0]) {
+            const headSha = commits[0].sha;
+            if (state.sha === headSha) {
+              return { listings: [], sha: headSha, etag };
+            }
+            sha = headSha;
+          }
+        }
+      } catch (e) {
+        // API check failed; fall through to unconditional fetch
+      }
     }
   }
 
-  return all;
+  const res = await rateLimitedFetch(url, () =>
+    fetchWithRetry(url, {
+      headers,
+      maxRetries: 3,
+      timeoutMs: 10000,
+      ...(useNoStore && { cache: 'no-store' }),
+    })
+  );
+
+  if (res.status === 304) {
+    return { listings: [], etag: state.etag, sha: state.sha };
+  }
+
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+
+  etag = res.headers.get('ETag') || undefined;
+  md = await res.text();
+
+  // Try .github/scripts/listings.json first
+  let listings: Internship[] = [];
+  if (url.includes('raw.githubusercontent.com')) {
+    const match = url.match(/github\.com\/([^/]+)\/([^/]+)|githubusercontent\.com\/([^/]+)\/([^/]+)/);
+    if (match) {
+      const owner = match[1] || match[3];
+      const repo = match[2] || match[4];
+      try {
+        const structRes = await rateLimitedFetch(
+          `https://raw.githubusercontent.com/${owner}/${repo}/main/.github/scripts/listings.json`,
+          () =>
+            fetchWithRetry(
+              `https://raw.githubusercontent.com/${owner}/${repo}/main/.github/scripts/listings.json`,
+              { maxRetries: 1, timeoutMs: 5000 }
+            )
+        );
+        if (structRes.ok) {
+          const data = await structRes.json();
+          if (Array.isArray(data)) {
+            listings = data.map((item: any) => ({
+              id: normalizeAppUrl(item.appUrl || ''),
+              company: item.company || '',
+              companyUrl: item.companyUrl,
+              role: item.role || '—',
+              location: item.location || '—',
+              appUrl: normalizeAppUrl(item.appUrl || ''),
+              datePosted: item.datePosted || '—',
+              dateMs: typeof item.dateMs === 'number' ? item.dateMs : parseDate(item.datePosted || ''),
+              prestigeScore: prestigeOf(item.company || ''),
+              source: slug,
+            }));
+          }
+        }
+      } catch (e) {
+        // Fall through to markdown parsing
+      }
+    }
+  }
+
+  if (listings.length === 0) {
+    listings = parseMarkdown(md, slug);
+  }
+
+  // Enhance with expiration detection
+  listings = listings.map((internship) => {
+    const exp = detectExpiration(internship.dateMs);
+    return {
+      ...internship,
+      expirationReason: exp.reason,
+      isExpired: exp.isExpired,
+    };
+  });
+
+  return { listings, etag, sha };
+}
+
+export async function scrapeAllReposWithState(scrapeState?: any, useNoStore: boolean = false): Promise<{
+  listings: Internship[];
+  perSource: Record<string, { etag?: string; sha?: string; lastOk?: number; failCount: number; circuitBreakerUntil?: number }>;
+}> {
+  const repos = loadSources();
+  const perSource: Record<
+    string,
+    { etag?: string; sha?: string; lastOk?: number; failCount: number; circuitBreakerUntil?: number }
+  > = scrapeState?.perSource || {};
+
+  const all: Internship[] = [];
+  const dedupMap = new Map<string, Internship>();
+  const CIRCUIT_BREAKER_THRESHOLD = 3;
+  const CIRCUIT_BREAKER_DURATION_MS = 30 * 60 * 1000; // 30 min
+
+  // Filter out sources that are in circuit breaker
+  const reposToScrape = repos
+    .map((url, idx) => ({ url, idx }))
+    .filter((item) => {
+      const slug = repoSlug(item.url);
+      const state = perSource[slug];
+      if (!state?.circuitBreakerUntil) return true;
+      if (Date.now() > state.circuitBreakerUntil) {
+        // Circuit breaker expired; reset
+        state.circuitBreakerUntil = undefined;
+        state.failCount = 0;
+        return true;
+      }
+      // Still in circuit breaker; skip
+      console.warn(`Source ${slug} is in circuit breaker until ${new Date(state.circuitBreakerUntil).toISOString()}`);
+      return false;
+    });
+
+  const results = await Promise.allSettled(
+    reposToScrape.map((item) => scrapeRepo(item.url, scrapeState, useNoStore))
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const { url } = reposToScrape[i];
+    const slug = repoSlug(url);
+
+    if (r.status === 'fulfilled') {
+      const { listings, etag, sha } = r.value;
+
+      // Update per-source metadata
+      if (etag || sha) {
+        perSource[slug] = {
+          ...perSource[slug],
+          ...(etag && { etag }),
+          ...(sha && { sha }),
+          lastOk: Date.now(),
+          failCount: 0,
+          circuitBreakerUntil: undefined,
+        };
+      }
+
+      for (const listing of listings) {
+        if (listing.appUrl) {
+          // Dedupe on normalized appUrl: keep record with more recent dateMs
+          const key = listing.appUrl;
+          const existing = dedupMap.get(key);
+          if (!existing || listing.dateMs > existing.dateMs) {
+            dedupMap.set(key, listing);
+          }
+        } else {
+          dedupMap.set(listing.id, listing);
+        }
+      }
+    } else {
+      console.error('Scrape failed for', slug, ':', r.reason);
+      // Increment failCount
+      const state = perSource[slug] || {};
+      state.failCount = (state.failCount || 0) + 1;
+
+      // Engage circuit breaker if threshold reached
+      if (state.failCount >= CIRCUIT_BREAKER_THRESHOLD) {
+        state.circuitBreakerUntil = Date.now() + CIRCUIT_BREAKER_DURATION_MS;
+        console.error(`Circuit breaker activated for ${slug} until ${new Date(state.circuitBreakerUntil).toISOString()}`);
+      }
+
+      perSource[slug] = state;
+    }
+  }
+
+  for (const listing of dedupMap.values()) {
+    all.push(listing);
+  }
+
+  return { listings: all, perSource };
+}
+
+// Legacy API for backward compatibility: returns Internship[] only
+export async function scrapeAllRepos(): Promise<Internship[]> {
+  const { listings } = await scrapeAllReposWithState();
+  return listings;
 }

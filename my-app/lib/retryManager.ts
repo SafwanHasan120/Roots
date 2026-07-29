@@ -15,17 +15,21 @@ const DEFAULT_OPTIONS: Required<RetryOptions> = {
   onRetry: () => {},
 };
 
+class RetryableError extends Error {
+  constructor(public status?: number, message?: string) {
+    super(message || `HTTP ${status}`);
+  }
+}
+
 function isRetryableError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const msg = error.message.toLowerCase();
-  // Retryable: 5xx, timeouts, connection errors
+  if (!(error instanceof RetryableError)) return false;
+  // Retryable: 5xx, 429 (rate limit), timeouts, connection errors
   return (
-    msg.includes('5') || // 5xx status
-    msg.includes('timeout') ||
-    msg.includes('econnrefused') ||
-    msg.includes('enotfound') ||
-    msg.includes('network') ||
-    msg.includes('socket hang up')
+    (error.status !== undefined && (error.status >= 500 || error.status === 429)) ||
+    error.message.includes('timeout') ||
+    error.message.includes('econnrefused') ||
+    error.message.includes('enotfound') ||
+    error.message.includes('socket hang up')
   );
 }
 
@@ -37,18 +41,15 @@ export async function withRetry<T>(
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs);
+
     try {
-      // Wrap with timeout
-      return await Promise.race([
-        fn(),
-        new Promise<T>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`Request timeout after ${opts.timeoutMs}ms`)),
-            opts.timeoutMs
-          )
-        ),
-      ]);
+      return await fn();
     } catch (error) {
+      clearTimeout(timeoutId);
+      controller.abort();
+
       lastError = error instanceof Error ? error : new Error(String(error));
 
       // Check if retryable
@@ -56,11 +57,12 @@ export async function withRetry<T>(
         throw lastError;
       }
 
-      // Calculate backoff: exponential with cap
-      const delayMs = Math.min(
+      // Full jitter backoff: random(0, min(initialDelayMs * 2^attempt, maxDelayMs))
+      const cap = Math.min(
         opts.initialDelayMs * Math.pow(2, attempt),
         opts.maxDelayMs
       );
+      const delayMs = Math.random() * cap;
 
       opts.onRetry(attempt + 1, lastError);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -88,5 +90,21 @@ export async function fetchWithRetry(
     )
   );
 
-  return withRetry(() => fetch(url, fetchOpts), retryOpts);
+  return withRetry(async () => {
+    // Allow explicit cache control, but don't force no-store by default to support ISR
+    const res = await fetch(url, fetchOpts);
+    // Throw on 5xx or 429; 4xx (except 429) fails fast
+    if (res.status >= 500 || res.status === 429) {
+      const retryErr = new RetryableError(res.status, `HTTP ${res.status}`);
+      if (res.status === 429 && res.headers.get('Retry-After')) {
+        const retryAfter = res.headers.get('Retry-After');
+        retryErr.message = `HTTP 429 Retry-After: ${retryAfter}`;
+      }
+      throw retryErr;
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return res;
+  }, retryOpts);
 }

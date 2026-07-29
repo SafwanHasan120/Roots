@@ -142,3 +142,7 @@ export async function rateLimitedFetch<T>(
 ): Promise<T> {
   return getRateLimiter().execute(url, fn);
 }
+
+// Note: The singleton RateLimiter is per-process and does not hold across serverless
+// instances. Rate limits are meaningful only in the cron/refresh path where multiple
+// concurrent sources run in the same process.

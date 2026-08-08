@@ -22,6 +22,18 @@ function normalizeListingId(appUrl: string): string {
   }
 }
 
+// Firestore rejects explicit `undefined` field values, which optional fields
+// on Internship (companyUrl, expirationReason) legitimately produce.
+function stripUndefined<T extends Record<string, any>>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
+}
+
+// Firestore document ids may not contain "/" and may not be empty.
+function listingDocId(listing: Internship): string {
+  const raw = normalizeListingId(listing.appUrl) || listing.id || '';
+  return raw.replace(/\//g, '_');
+}
+
 export async function getScrapeState(): Promise<ScrapeState | null> {
   try {
     const docRef = doc(db, 'meta', 'scrapeState');
@@ -53,9 +65,22 @@ export async function writeListings(
       // Collection doesn't exist yet
     }
 
+    // Ids written here must match the ids the inactive-sweep compares against,
+    // so both loops derive them through this one function.
+    const writtenIds = new Set<string>();
+
     // Write/skip based on content hash
     for (const listing of listings) {
-      const id = normalizeListingId(listing.appUrl) || listing.id;
+      const id = listingDocId(listing);
+      // Firestore rejects empty ids. Skip rather than throw: one malformed
+      // record must not abort the whole batch.
+      if (!id) {
+        console.warn('Skipping listing with empty id:', listing.company, listing.role);
+        skipped++;
+        continue;
+      }
+      writtenIds.add(id);
+
       const hash = hashContent(listing);
       const existingData = existing.get(id);
 
@@ -64,15 +89,14 @@ export async function writeListings(
         skipped++;
       } else {
         // New or changed; write
-        await setDoc(doc(db, 'listings', id), { ...listing, hash });
+        await setDoc(doc(db, 'listings', id), stripUndefined({ ...listing, hash }));
         written++;
       }
     }
 
     // Mark missing listings as inactive
-    for (const [id] of existing) {
-      if (!listings.some((l) => normalizeListingId(l.appUrl) === id || l.id === id)) {
-        const existingData = existing.get(id);
+    for (const [id, existingData] of existing) {
+      if (!writtenIds.has(id) && existingData.active !== false) {
         await setDoc(doc(db, 'listings', id), { ...existingData, active: false });
       }
     }

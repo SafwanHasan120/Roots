@@ -5,7 +5,11 @@ import { getScrapeState, writeListings } from '@/lib/firestore';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
-export async function POST(request: NextRequest) {
+// Vercel Cron issues GET requests, so this route must never be statically
+// optimized — otherwise the cron receives a build-time cached response.
+export const dynamic = 'force-dynamic';
+
+async function handleRefresh(request: NextRequest) {
   // Guard with CRON_SECRET
   const authHeader = request.headers.get('authorization');
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -26,11 +30,18 @@ export async function POST(request: NextRequest) {
 
     await setDoc(doc(db, 'meta', 'scrapeState'), newState, { merge: true });
 
+    // Per-source parse counts make a stale source visible in the cron logs.
+    const countsBySource = listings.reduce<Record<string, number>>((acc, l) => {
+      acc[l.source] = (acc[l.source] || 0) + 1;
+      return acc;
+    }, {});
+
     return NextResponse.json({
       status: 'ok',
       written: result.written,
       skipped: result.skipped,
       total: listings.length,
+      countsBySource,
     });
   } catch (e) {
     console.error('Refresh failed:', e);
@@ -40,3 +51,7 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Cron hits GET; POST is kept for manual triggering. Both require CRON_SECRET.
+export const GET = handleRefresh;
+export const POST = handleRefresh;

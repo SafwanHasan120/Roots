@@ -82,8 +82,9 @@ export function getExpirationBadge(reason: ExpirationReason): string {
 
 export function isExpiredOrOld(
   dateMs: number,
-  includeWarning: boolean = false
+  includeWarning: boolean = false,
+  currentDateMs: number = Date.now()
 ): boolean {
-  const status = detectExpiration(dateMs);
+  const status = detectExpiration(dateMs, currentDateMs);
   return includeWarning ? status.isExpired || status.warningThreshold : status.isExpired;
 }

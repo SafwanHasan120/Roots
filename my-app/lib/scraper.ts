@@ -110,7 +110,7 @@ export function formatDateToMonthDay(dateMs: number): string {
 }
 
 // Split a markdown table row into trimmed cells, dropping the leading/trailing pipe delimiters.
-function splitRow(line: string): string[] {
+export function splitRow(line: string): string[] {
   // Split on unescaped pipes.
   const cells = line.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, '|').trim());
   // Drop empty leading/trailing cells produced by edge pipes.
@@ -119,7 +119,7 @@ function splitRow(line: string): string[] {
   return cells;
 }
 
-function isSeparatorRow(line: string): boolean {
+export function isSeparatorRow(line: string): boolean {
   return /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(line) && line.includes('-');
 }
 
@@ -131,7 +131,7 @@ interface ColMap {
   date: number;
 }
 
-function detectColumns(header: string[]): ColMap | null {
+export function detectColumns(header: string[]): ColMap | null {
   const map: ColMap = { company: -1, role: -1, location: -1, appUrl: -1, date: -1 };
   header.forEach((h, i) => {
     const k = h.toLowerCase();
@@ -146,7 +146,7 @@ function detectColumns(header: string[]): ColMap | null {
   return map;
 }
 
-function normalizeAppUrl(url: string): string {
+export function normalizeAppUrl(url: string): string {
   if (!url) return '';
   try {
     const parsed = new URL(url);
@@ -344,18 +344,42 @@ async function scrapeRepo(url: string, scrapeState?: any, useNoStore: boolean = 
         if (structRes.ok) {
           const data = await structRes.json();
           if (Array.isArray(data)) {
-            listings = data.map((item: any) => ({
-              id: normalizeAppUrl(item.appUrl || ''),
-              company: item.company || '',
-              companyUrl: item.companyUrl,
-              role: item.role || '—',
-              location: item.location || '—',
-              appUrl: normalizeAppUrl(item.appUrl || ''),
-              datePosted: item.datePosted || '—',
-              dateMs: typeof item.dateMs === 'number' ? item.dateMs : parseDate(item.datePosted || ''),
-              prestigeScore: prestigeOf(item.company || ''),
-              source: slug,
-            }));
+            listings = data
+              // The feed keeps closed/hidden roles in the file; drop them here
+              // so they never reach the ranker.
+              .filter((item: any) => item.active !== false && item.is_visible !== false)
+              .map((item: any) => {
+                // This feed is snake_case; accept camelCase too so a source that
+                // publishes the other convention still maps cleanly.
+                const appUrl = normalizeAppUrl(item.url || item.appUrl || '');
+                const company = item.company_name || item.company || '';
+                const location = Array.isArray(item.locations)
+                  ? item.locations.join(', ')
+                  : item.locations || item.location || '—';
+                // date_posted / date_updated are epoch *seconds*.
+                const epochSec = item.date_posted ?? item.date_updated;
+                const dateMs =
+                  typeof epochSec === 'number'
+                    ? epochSec * 1000
+                    : typeof item.dateMs === 'number'
+                      ? item.dateMs
+                      : parseDate(item.datePosted || '');
+
+                return {
+                  id: appUrl || `${slug}:${company}:${item.title || item.role || ''}`,
+                  company,
+                  companyUrl: item.company_url || item.companyUrl || undefined,
+                  role: item.title || item.role || '—',
+                  location: location || '—',
+                  appUrl,
+                  datePosted: dateMs ? formatDateToMonthDay(dateMs) : '—',
+                  dateMs,
+                  prestigeScore: prestigeOf(company),
+                  source: slug,
+                };
+              })
+              // A record with no company and no link is unusable downstream.
+              .filter((l: Internship) => l.company && l.id);
           }
         }
       } catch (e) {

@@ -22,19 +22,32 @@ class RetryableError extends Error {
 }
 
 function isRetryableError(error: unknown): boolean {
-  if (!(error instanceof RetryableError)) return false;
-  // Retryable: 5xx, 429 (rate limit), timeouts, connection errors
-  return (
-    (error.status !== undefined && (error.status >= 500 || error.status === 429)) ||
-    error.message.includes('timeout') ||
-    error.message.includes('econnrefused') ||
-    error.message.includes('enotfound') ||
-    error.message.includes('socket hang up')
-  );
+  if (!(error instanceof Error)) return false;
+
+  const msg = error.message.toLowerCase();
+
+  // Check common retry patterns
+  if (
+    msg.includes('timeout') ||
+    msg.includes('econnrefused') ||
+    msg.includes('enotfound') ||
+    msg.includes('socket hang up')
+  ) {
+    return true;
+  }
+
+  // Check RetryableError status codes
+  if (error instanceof RetryableError) {
+    return (
+      error.status !== undefined && (error.status >= 500 || error.status === 429)
+    );
+  }
+
+  return false;
 }
 
 export async function withRetry<T>(
-  fn: () => Promise<T>,
+  fn: (signal?: AbortSignal) => Promise<T>,
   options: RetryOptions = {}
 ): Promise<T> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -45,15 +58,19 @@ export async function withRetry<T>(
     const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs);
 
     try {
-      return await fn();
+      return await fn(controller.signal);
     } catch (error) {
       clearTimeout(timeoutId);
-      controller.abort();
 
       lastError = error instanceof Error ? error : new Error(String(error));
 
+      // Check if aborted (timeout)
+      if (controller.signal.aborted) {
+        lastError = new Error(`Request timeout after ${opts.timeoutMs}ms`);
+      }
+
       // Check if retryable
-      if (!isRetryableError(error) || attempt === opts.maxRetries) {
+      if (!isRetryableError(lastError) || attempt === opts.maxRetries) {
         throw lastError;
       }
 

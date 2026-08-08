@@ -25,7 +25,7 @@ export default function NavBar() {
         <div className="flex items-baseline gap-2.5">
           <Link href="/" className="hover:opacity-70 transition-opacity">
             <h1 className="font-serif text-[1.75rem] font-medium tracking-[-0.02em] text-gray-900">
-              Sift
+              Roots
             </h1>
           </Link>
         </div>

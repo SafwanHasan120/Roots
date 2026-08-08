@@ -103,12 +103,62 @@ function CaretIcon({ direction, className }: { direction?: 'up' | 'down' | null;
   );
 }
 
+function ChevronIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
 const PILL_BASE =
   'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all duration-200 cursor-pointer select-none';
 const PILL_ON = 'border-transparent bg-gray-900 text-white shadow-sm';
 const PILL_OFF = 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-900';
 
 type SortDirection = 'asc' | 'desc' | null;
+
+// A run of consecutive rows sharing a company. Adjacency (not a global
+// company key) is deliberate: it folds repeats without reordering the list,
+// so the active sort still decides where each run sits.
+interface Group {
+  key: string;
+  company: string;
+  companyUrl?: string;
+  items: Internship[];
+}
+
+function groupByAdjacentCompany(rows: Internship[]): Group[] {
+  const groups: Group[] = [];
+  for (const row of rows) {
+    const prev = groups[groups.length - 1];
+    // Case-insensitive so "TikTok"/"Tiktok" from different sources still fold.
+    if (prev && prev.company.toLowerCase() === row.company.toLowerCase()) {
+      prev.items.push(row);
+      // Keep the first non-empty companyUrl in the run.
+      if (!prev.companyUrl && row.companyUrl) prev.companyUrl = row.companyUrl;
+    } else {
+      groups.push({
+        key: row.id,
+        company: row.company,
+        companyUrl: row.companyUrl,
+        items: [row],
+      });
+    }
+  }
+  return groups;
+}
+
+// The date range spanned by a collapsed run, e.g. "August 4" or "Aug 1 – Aug 4".
+function groupDateLabel(items: Internship[]): string {
+  const stamps = items.map((i) => i.dateMs).filter((d) => d > 0);
+  if (stamps.length === 0) return '—';
+  const min = Math.min(...stamps);
+  const max = Math.max(...stamps);
+  const minLabel = formatDateToMonthDay(min);
+  const maxLabel = formatDateToMonthDay(max);
+  return minLabel === maxLabel ? maxLabel : `${minLabel} – ${maxLabel}`;
+}
 
 export default function InternshipTable({ internships, showFavorites = true, onlyFavorites = false }: Props) {
   const [query, setQuery] = useState('');
@@ -117,6 +167,7 @@ export default function InternshipTable({ internships, showFavorites = true, onl
   const [sortDir, setSortDir] = useState<SortDirection>(null);
   const [tailoring, setTailoring] = useState<Map<string, boolean>>(new Map());
   const [tailorErrors, setTailorErrors] = useState<Map<string, string>>(new Map());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const { isFavorite, toggleFavorite } = useFavorites();
   const { user } = useAuth();
   const { getResult, setResult, openView } = useTailor();
@@ -197,6 +248,14 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     });
     return copy;
   }, [filtered, sortDir]);
+
+  const groups = useMemo(() => groupByAdjacentCompany(sorted), [sorted]);
+
+  // Collapse everything again when the result set changes: an id left over
+  // from a previous filter would otherwise silently expand a new group.
+  useEffect(() => {
+    setExpanded(new Set());
+  }, [query, activeLocs, activeRoles, sortDir]);
 
   const hasFilters = query.trim() !== '' || activeLocs.size > 0 || activeRoles.size > 0;
   const clearAll = () => {
@@ -412,13 +471,68 @@ export default function InternshipTable({ internships, showFavorites = true, onl
             </tr>
           </thead>
           <tbody>
-            {sorted.map((i) => (
+            {groups.map((g) => {
+              const isGroup = g.items.length > 1;
+              const isOpen = expanded.has(g.key);
+
+              // A folded run renders one summary row in place of its members.
+              if (isGroup && !isOpen) {
+                return (
+                  <tr
+                    key={g.key}
+                    onClick={() => setExpanded((s) => toggle(s, g.key))}
+                    className="group cursor-pointer border-b border-gray-100 transition-colors duration-150 last:border-0 hover:bg-emerald-50/40"
+                  >
+                    <td className="px-3 py-4 align-middle">
+                      <span className="font-semibold text-gray-900 line-clamp-2">{g.company}</span>
+                    </td>
+                    <td className="px-3 py-4 align-middle" colSpan={2}>
+                      <button
+                        type="button"
+                        aria-expanded={false}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpanded((s) => toggle(s, g.key));
+                        }}
+                        className="inline-flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-200"
+                      >
+                        <ChevronIcon className="h-3.5 w-3.5" />
+                        {g.items.length} open positions
+                      </button>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-4 align-middle text-sm tabular-nums text-gray-500">
+                      {groupDateLabel(g.items)}
+                    </td>
+                    <td className="px-2 py-4 align-middle text-sm text-gray-400">—</td>
+                    {showFavorites && <td className="px-2 py-4" />}
+                    <td className="px-3 py-4" />
+                  </tr>
+                );
+              }
+
+              return g.items.map((i, idx) => (
               <tr
                 key={i.id}
-                className="group border-b border-gray-100 transition-colors duration-150 last:border-0 hover:bg-emerald-50/40"
+                className={`group border-b border-gray-100 transition-colors duration-150 last:border-0 hover:bg-emerald-50/40 ${
+                  isGroup ? 'bg-gray-50/40' : ''
+                }`}
               >
                 <td className="px-3 py-4 align-middle">
-                  {i.companyUrl ? (
+                  {/* Within an expanded run only the first row carries the
+                      company name; the rest indent under it. */}
+                  {isGroup && idx > 0 ? (
+                    <span className="sr-only">{i.company}</span>
+                  ) : isGroup ? (
+                    <button
+                      type="button"
+                      aria-expanded={true}
+                      onClick={() => setExpanded((s) => toggle(s, g.key))}
+                      className="inline-flex items-center gap-1.5 text-left font-semibold text-gray-900 transition-colors hover:text-accent"
+                    >
+                      <ChevronIcon className="h-3.5 w-3.5 shrink-0 rotate-180 text-gray-400" />
+                      <span className="line-clamp-2">{i.company}</span>
+                    </button>
+                  ) : i.companyUrl ? (
                     <a
                       href={i.companyUrl}
                       target="_blank"
@@ -541,7 +655,8 @@ export default function InternshipTable({ internships, showFavorites = true, onl
                   )}
                 </td>
               </tr>
-            ))}
+              ));
+            })}
           </tbody>
         </table>
 
@@ -550,14 +665,64 @@ export default function InternshipTable({ internships, showFavorites = true, onl
 
       {/* ── Mobile / tablet cards ─────────────────────────────────── */}
       <div className="space-y-3 md:hidden">
-        {sorted.map((i) => (
+        {groups.map((g) => {
+          const isGroup = g.items.length > 1;
+          const isOpen = expanded.has(g.key);
+
+          // Collapsed run: one tappable summary card, min-h-14 for touch.
+          if (isGroup && !isOpen) {
+            return (
+              <button
+                key={g.key}
+                type="button"
+                aria-expanded={false}
+                onClick={() => setExpanded((s) => toggle(s, g.key))}
+                className="flex min-h-14 w-full items-center justify-between gap-3 rounded-2xl border border-gray-200/80 bg-white p-5 text-left shadow-sm transition-colors active:bg-gray-50"
+              >
+                <div className="min-w-0">
+                  <span className="font-semibold text-gray-900">{g.company}</span>
+                  <p className="mt-1 text-sm text-gray-500">
+                    {g.items.length} open positions
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="whitespace-nowrap text-xs tabular-nums text-gray-500">
+                    {groupDateLabel(g.items)}
+                  </span>
+                  <ChevronIcon className="h-4 w-4 text-gray-400" />
+                </div>
+              </button>
+            );
+          }
+
+          return (
+            <div key={g.key} className={isGroup ? 'space-y-2' : undefined}>
+              {isGroup && (
+                <button
+                  type="button"
+                  aria-expanded={true}
+                  onClick={() => setExpanded((s) => toggle(s, g.key))}
+                  className="flex min-h-14 w-full items-center justify-between gap-3 rounded-2xl border border-gray-200/80 bg-white px-5 py-4 text-left shadow-sm transition-colors active:bg-gray-50"
+                >
+                  <span className="font-semibold text-gray-900">{g.company}</span>
+                  <span className="flex shrink-0 items-center gap-2 text-xs text-gray-500">
+                    Hide
+                    <ChevronIcon className="h-4 w-4 rotate-180 text-gray-400" />
+                  </span>
+                </button>
+              )}
+
+              <div className={isGroup ? 'space-y-2 border-l-2 border-gray-200 pl-3' : undefined}>
+                {g.items.map((i) => (
           <div
             key={i.id}
             className="rounded-2xl border border-gray-200/80 bg-white p-5 shadow-sm"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                {i.companyUrl ? (
+                {isGroup ? (
+                  <span className="sr-only">{i.company}</span>
+                ) : i.companyUrl ? (
                   <a
                     href={i.companyUrl}
                     target="_blank"
@@ -685,7 +850,11 @@ export default function InternshipTable({ internships, showFavorites = true, onl
               )}
             </div>
           </div>
-        ))}
+                ))}
+              </div>
+            </div>
+          );
+        })}
 
         {filtered.length === 0 && (
           <div className="rounded-2xl border border-gray-200/80 bg-white">

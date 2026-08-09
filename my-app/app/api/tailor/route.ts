@@ -3,6 +3,7 @@ import { checkRateLimit, incrementUsage } from '@/lib/tailorRateLimiter';
 import { getInternshipById } from '@/lib/firestore';
 import { assertSafeUrl } from '@/lib/urlGuard';
 import { extractJD } from '@/lib/jdExtractor';
+import { validateTailoredLatex } from '@/lib/latexValidator';
 
 interface TailorRequest {
   internshipId: string;
@@ -93,8 +94,13 @@ ${latex}`;
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      system: systemPrompt,
+      max_tokens: 8192,
+      temperature: 0,
+      system: {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
       messages: [{ role: 'user', content: userMessage }],
     }),
   });
@@ -105,11 +111,19 @@ ${latex}`;
 
   const data = (await response.json()) as {
     content?: Array<{ type: string; text?: string }>;
+    stop_reason?: string;
   };
-  const content = data.content?.[0];
 
-  if (!content || content.type !== 'text' || !content.text) {
-    throw new Error('Invalid Claude API response');
+  // Check for max_tokens stop reason
+  if (data.stop_reason === 'max_tokens') {
+    throw new Error('Claude API reached max_tokens limit - response incomplete');
+  }
+
+  // Find text content block
+  const content = data.content?.find((block) => block.type === 'text');
+
+  if (!content || !content.text) {
+    throw new Error('Invalid Claude API response: no text content');
   }
 
   return content.text;
@@ -217,7 +231,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 7. Increment usage (after successful Claude response)
+    // 7. Validate tailored LaTeX
+    const validation = validateTailoredLatex(latex, tailoredLatex);
+    if (!validation.ok) {
+      console.error('LaTeX validation failed:', validation.errors);
+      return NextResponse.json(
+        {
+          error: 'validation_failed',
+          message: 'The tailored resume failed validation. Please try again.',
+        },
+        { status: 502 }
+      );
+    }
+
+    // 8. Increment usage (after successful validation)
     try {
       await incrementUsage(uid);
     } catch (error) {
@@ -226,7 +253,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       // The tailor succeeded even if we couldn't update the counter
     }
 
-    // 8. Return success
+    // 9. Return success
     return NextResponse.json(
       {
         latex: tailoredLatex,

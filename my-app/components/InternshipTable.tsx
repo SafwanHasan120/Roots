@@ -284,7 +284,6 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           internshipId,
-          appUrl: internship.appUrl,
           latex: resumeSettings.latex,
           uid: user.uid,
         }),

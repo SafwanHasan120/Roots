@@ -127,3 +127,24 @@ export async function readListingsFromFirestore(): Promise<Internship[]> {
     return [];
   }
 }
+
+export async function getInternshipById(internshipId: string): Promise<Internship | null> {
+  try {
+    const docRef = doc(db, 'listings', internshipId);
+    const docSnap = await getDoc(docRef);
+    if (!docSnap.exists()) {
+      return null;
+    }
+    const data = docSnap.data();
+    // Filter out inactive listings
+    if (data.active === false) {
+      return null;
+    }
+    // Remove internal hash field
+    const { hash, active, ...listing } = data;
+    return listing as Internship;
+  } catch (e) {
+    console.error('Failed to read internship:', e);
+    return null;
+  }
+}

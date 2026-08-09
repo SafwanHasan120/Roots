@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, incrementUsage } from '@/lib/tailorRateLimiter';
+import { getInternshipById } from '@/lib/firestore';
+import { assertSafeUrl } from '@/lib/urlGuard';
 
 interface TailorRequest {
   internshipId: string;
-  appUrl: string;
   latex: string;
   uid: string;
 }
@@ -150,9 +151,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
   try {
     // 1. Validate inputs
     const body = (await request.json()) as TailorRequest;
-    const { internshipId, appUrl, latex, uid } = body;
+    const { internshipId, latex, uid } = body;
 
-    if (!internshipId?.trim() || !appUrl?.trim() || !latex?.trim() || !uid?.trim()) {
+    if (!internshipId?.trim() || !latex?.trim() || !uid?.trim()) {
       return NextResponse.json(
         { error: 'validation_failed', message: 'Missing required fields' },
         { status: 400 }
@@ -173,7 +174,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 3. Scrape job description
+    // 3. Look up internship by ID to get appUrl
+    const internship = await getInternshipById(internshipId);
+    if (!internship) {
+      return NextResponse.json(
+        { error: 'not_found', message: 'Internship listing not found' },
+        { status: 404 }
+      );
+    }
+
+    const appUrl = internship.appUrl;
+
+    // 4. Validate URL safety
+    try {
+      await assertSafeUrl(appUrl);
+    } catch (error) {
+      console.error('URL validation failed:', error);
+      return NextResponse.json(
+        {
+          error: 'unsafe_url',
+          message: 'The internship URL failed security validation.',
+        },
+        { status: 403 }
+      );
+    }
+
+    // 5. Scrape job description
     let jdText: string;
     try {
       jdText = await scrapeJobDescription(appUrl);
@@ -188,7 +214,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 4. Call Claude API
+    // 6. Call Claude API
     let tailoredLatex: string;
     try {
       tailoredLatex = await callClaudeAPI(jdText, latex);
@@ -213,7 +239,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 6. Increment usage (after successful Claude response)
+    // 7. Increment usage (after successful Claude response)
     try {
       await incrementUsage(uid);
     } catch (error) {
@@ -222,7 +248,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       // The tailor succeeded even if we couldn't update the counter
     }
 
-    // 7. Return success
+    // 8. Return success
     return NextResponse.json(
       {
         latex: tailoredLatex,

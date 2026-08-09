@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/scrape/refresh",
-      "schedule": "0 0,2,5,7,10,12,15,17,20,22 * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }

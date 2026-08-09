@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, incrementUsage } from '@/lib/tailorRateLimiter';
 import { getInternshipById } from '@/lib/firestore';
 import { assertSafeUrl } from '@/lib/urlGuard';
+import { extractJD } from '@/lib/jdExtractor';
 
 interface TailorRequest {
   internshipId: string;
@@ -17,39 +18,6 @@ interface TailorResponse {
   used?: number;
   limit?: number;
   resetsAt?: number;
-}
-
-async function scrapeJobDescription(url: string): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; InternshipBot/1.0)',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const html = await response.text();
-
-    // Strip HTML tags
-    const text = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    // Truncate to 6000 characters
-    return text.substring(0, 6000);
-  } finally {
-    clearTimeout(timeoutId);
-  }
 }
 
 async function callClaudeAPI(jd: string, latex: string): Promise<string> {
@@ -199,16 +167,26 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 5. Scrape job description
+    // 5. Extract job description
     let jdText: string;
     try {
-      jdText = await scrapeJobDescription(appUrl);
+      const jd = await extractJD(appUrl);
+      if (!jd.text) {
+        return NextResponse.json(
+          {
+            error: 'jd_extraction_failed',
+            message: 'Could not extract job description from the provided URL. Please try again or check the link.',
+          },
+          { status: 422 }
+        );
+      }
+      jdText = jd.text;
     } catch (error) {
-      console.error('JD scrape failed:', error);
+      console.error('JD extraction failed:', error);
       return NextResponse.json(
         {
-          error: 'jd_scrape_failed',
-          message: 'Could not fetch job description from the provided URL. Please try again or check the link.',
+          error: 'jd_extraction_failed',
+          message: 'Could not extract job description from the provided URL. Please try again or check the link.',
         },
         { status: 422 }
       );

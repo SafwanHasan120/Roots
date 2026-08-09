@@ -72,7 +72,10 @@ Run all evaluation layers silently. Apply fixes directly to the LaTeX. Output ON
 CRITICAL RULES — DO NOT VIOLATE:
 - Do NOT add new experience entries, projects, or skills that don't exist in the input
 - Do NOT add new sections
-- Only reorder, rewrite, or remove existing content to match the job description
+- PRESERVE THE ORIGINAL ORDER OF EXPERIENCE ENTRIES AND EDUCATION ENTRIES EXACTLY
+- You MAY reorder other content to better match the job description, including projects, skills, and bullet lists within sections
+- DO NOT move experience or education items to a different section or change their relative order
+- Only rewrite, trim, or remove existing content to match the job description
 - Preserve all original content exactly unless making targeted edits to bullets or wording
 - If space is needed, remove the WEAKEST existing bullets from the LEAST relevant sections, not add new ones
 

@@ -293,6 +293,9 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         error?: string;
         message?: string;
         latex?: string;
+        coverageBefore?: number;
+        coverageAfter?: number;
+        degraded?: boolean;
       };
 
       console.log('[Tailor] Response status:', response.status);
@@ -318,6 +321,10 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         setResult({
           internshipId,
           latex: data.latex,
+          originalLatex: resumeSettings.latex,
+          coverageBefore: data.coverageBefore,
+          coverageAfter: data.coverageAfter,
+          degraded: data.degraded,
           tailoredAt: Date.now(),
         });
         console.log('[Tailor] Result set successfully');

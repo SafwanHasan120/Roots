@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, incrementUsage } from '@/lib/tailorRateLimiter';
-import { getInternshipById } from '@/lib/firestore';
+import { resolveInternship } from '@/lib/listingResolver';
 import { assertSafeUrl } from '@/lib/urlGuard';
 import { extractJD } from '@/lib/jdExtractor';
+import { analyzeJD } from '@/lib/jdAnalyzer';
+import { computeKeywordGap } from '@/lib/keywordGap';
 import { validateTailoredLatex } from '@/lib/latexValidator';
 
 interface TailorRequest {
@@ -19,68 +21,40 @@ interface TailorResponse {
   used?: number;
   limit?: number;
   resetsAt?: number;
+  coverageBefore?: number;
+  coverageAfter?: number;
+  degraded?: boolean;
 }
 
-async function callClaudeAPI(jd: string, latex: string): Promise<string> {
-  const systemPrompt = `You are a resume optimization system. You receive a job description and a LaTeX resume.
+async function tailorLatexWithAnalysis(
+  latex: string,
+  jdText: string,
+  analysis: {
+    required_skills: string[];
+    preferred_skills: string[];
+    keywords: string[];
+  },
+  missing: string[]
+): Promise<string> {
+  const requirementsSummary = `Required Skills: ${analysis.required_skills.join(', ')}
+Preferred Skills: ${analysis.preferred_skills.join(', ')}
+Key Keywords: ${analysis.keywords.join(', ')}
 
-Your job: TAILOR the resume to match the job description. Do NOT add new sections, projects, experience entries, or skills. Only modify existing content.
+Missing Keywords in Resume: ${missing.join(', ')}`;
 
-You are a panel of three evaluators conducting a thorough, no-flattery software engineering resume review calibrated to 2026 hiring standards.
+  const systemPrompt = `You are a resume editor. Rewrite LaTeX to surface relevant keywords and experience.
 
-EVALUATOR 1 — ATS ALGORITHM
-Simulate Greenhouse/Lever 2026 scoring. Scan for keyword strings, formatting legibility, and section structure.
+Rules:
+- Never add sections, experience entries, projects, or skills not already in the input
+- Never alter or add a numeric value (dates, metrics, percentages)
+- Reorder and rewrite existing bullets to surface covered keywords from the job
+- If space is needed, delete the weakest bullet from the least relevant section
+- Output the complete .tex file only, starting with \\documentclass, no markdown fences
 
-EVALUATOR 2 — SENIOR TECH RECRUITER
-10 years at Google, Meta, and Amazon. 7.4-second first pass. Care about: level signal, tech stack match, career trajectory clarity, builder vs task-completer. Skip duty-based bullets.
+Focus on: ${missing.slice(0, 5).join(', ')}`;
 
-EVALUATOR 3 — STAFF SWE HIRING MANAGER
-Probe technical credibility: Are metrics plausible? Does the person show engineering judgment or just list tools?
-
-Run all evaluation layers silently. Apply fixes directly to the LaTeX. Output ONLY the final .tex file — no explanation, no analysis, no markdown fences.
-
-CRITICAL RULES — DO NOT VIOLATE:
-- Do NOT add new experience entries, projects, or skills that don't exist in the input
-- Do NOT add new sections
-- PRESERVE THE ORIGINAL ORDER OF EXPERIENCE ENTRIES AND EDUCATION ENTRIES EXACTLY
-- You MAY reorder other content to better match the job description, including projects, skills, and bullet lists within sections
-- DO NOT move experience or education items to a different section or change their relative order
-- Only rewrite, trim, or remove existing content to match the job description
-- Preserve all original content exactly unless making targeted edits to bullets or wording
-- If space is needed, remove the WEAKEST existing bullets from the LEAST relevant sections, not add new ones
-
-EVALUATION LAYERS (run silently):
-1. ATS: keywords, formatting, canonical tech capitalization (JavaScript, TypeScript, Next.js, PostgreSQL, PyTorch, React, Node.js, GitHub, CI/CD)
-2. Bullet quality rubric: Action Verb + Specific Technology + Metric + Outcome. Rewrite C/D grade bullets to A grade.
-3. Quantification: improve metrics where plausible (scale, performance, business impact) — do not invent new metrics
-4. Relevance reordering: Prioritize experience/projects that match job description keywords
-5. Red flag removal: buzzwords, duty descriptions, vague metrics, over-claiming
-
-LATEX TEMPLATE RULES (Jake/sb2nov format — do not deviate from this preamble):
-\\documentclass[letterpaper,10pt]{article}
-\\usepackage{latexsym}
-\\usepackage[empty]{fullpage}
-\\usepackage{titlesec}
-\\usepackage{marvosym}
-\\usepackage[usenames,dvipsnames]{color}
-\\usepackage{verbatim}
-\\usepackage{enumitem}
-\\usepackage[hidelinks]{hyperref}
-\\usepackage{fancyhdr}
-\\usepackage[english]{babel}
-\\usepackage{tabularx}
-\\input{glyphtounicode}
-
-SECTION ORDER: Header → Education → Experience → Projects → Technical Skills
-
-SPECIAL CHARACTER ESCAPING: % → \\%, & → \\&, # → \\#, _ → \\_ in text mode
-
-ONE-PAGE ENFORCEMENT: Must fit one page for candidates with under 5 years experience. Cut weakest bullets before shortening others.
-
-Output: complete .tex file only, starting with \\documentclass`;
-
-  const userMessage = `Job Description:
-${jd}
+  const userMessage = `Requirements:
+${requirementsSummary}
 
 ---RESUME---
 ${latex}`;
@@ -96,17 +70,24 @@ ${latex}`;
       model: 'claude-sonnet-4-6',
       max_tokens: 8192,
       temperature: 0,
-      system: {
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      },
+      // Must be an array of content blocks: the API rejects a bare object with
+      // "system: Input should be a valid array".
+      system: [
+        {
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
       messages: [{ role: 'user', content: userMessage }],
     }),
   });
 
   if (!response.ok) {
-    throw new Error(`Claude API error: ${response.status}`);
+    // Include the response body: the status alone hides the actual cause
+    // (bad model id, malformed system block, rate limit).
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Claude API error: ${response.status} ${detail}`);
   }
 
   const data = (await response.json()) as {
@@ -114,14 +95,77 @@ ${latex}`;
     stop_reason?: string;
   };
 
-  // Check for max_tokens stop reason
   if (data.stop_reason === 'max_tokens') {
     throw new Error('Claude API reached max_tokens limit - response incomplete');
   }
 
-  // Find text content block
   const content = data.content?.find((block) => block.type === 'text');
+  if (!content || !content.text) {
+    throw new Error('Invalid Claude API response: no text content');
+  }
 
+  return content.text;
+}
+
+async function tailorLatexDegraded(company: string, role: string, latex: string): Promise<string> {
+  const systemPrompt = `You are a resume editor. Make minor improvements without access to full job requirements.
+
+Rules:
+- Never add sections, experience entries, projects, or skills not already in the input
+- Never alter or add a numeric value (dates, metrics, percentages)
+- Reorder and enhance existing bullets to highlight relevance to the role
+- If space is needed, delete the weakest bullet from the least relevant section
+- Output the complete .tex file only, starting with \\documentclass, no markdown fences`;
+
+  const userMessage = `Company: ${company}
+Role: ${role}
+
+Make the resume relevant to this role while preserving all existing content.
+
+---RESUME---
+${latex}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8192,
+      temperature: 0,
+      // Must be an array of content blocks: the API rejects a bare object with
+      // "system: Input should be a valid array".
+      system: [
+        {
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+      messages: [{ role: 'user', content: userMessage }],
+    }),
+  });
+
+  if (!response.ok) {
+    // Include the response body: the status alone hides the actual cause
+    // (bad model id, malformed system block, rate limit).
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Claude API error: ${response.status} ${detail}`);
+  }
+
+  const data = (await response.json()) as {
+    content?: Array<{ type: string; text?: string }>;
+    stop_reason?: string;
+  };
+
+  if (data.stop_reason === 'max_tokens') {
+    throw new Error('Claude API reached max_tokens limit - response incomplete');
+  }
+
+  const content = data.content?.find((block) => block.type === 'text');
   if (!content || !content.text) {
     throw new Error('Invalid Claude API response: no text content');
   }
@@ -156,8 +200,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 3. Look up internship by ID to get appUrl
-    const internship = await getInternshipById(internshipId);
+    // 3. Resolve the internship server-side to get appUrl. Resolved from the
+    // same listing source the UI renders, so a visible row is always tailorable.
+    const internship = await resolveInternship(internshipId);
     if (!internship) {
       return NextResponse.json(
         { error: 'not_found', message: 'Internship listing not found' },
@@ -183,6 +228,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
 
     // 5. Extract job description
     let jdText: string;
+    let jdConfidence: 'high' | 'low';
     try {
       const jd = await extractJD(appUrl);
       if (!jd.text) {
@@ -195,6 +241,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
         );
       }
       jdText = jd.text;
+      jdConfidence = jd.confidence;
     } catch (error) {
       console.error('JD extraction failed:', error);
       return NextResponse.json(
@@ -206,25 +253,73 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
       );
     }
 
-    // 6. Call Claude API
-    let tailoredLatex: string;
-    try {
-      tailoredLatex = await callClaudeAPI(jdText, latex);
-    } catch (error) {
-      console.error('Claude API error:', error);
-      return NextResponse.json(
-        {
-          error: 'claude_error',
-          message: 'Resume tailoring service is unavailable. Please try again.',
-        },
-        { status: 502 }
-      );
+    // 6. Two-pass tailoring
+    let tailoredLatex: string | undefined;
+    let coverageBefore = 0;
+    let coverageAfter = 0;
+    let isDegraded = false;
+
+    // Compute coverage before tailoring
+    let beforeGap = { covered: [] as string[], missing: [] as string[], coveragePct: 100 };
+
+    if (jdConfidence === 'high') {
+      // Pass 1: Analyze JD
+      let analysis;
+      try {
+        analysis = await analyzeJD(jdText, appUrl);
+      } catch (error) {
+        console.error('JD analysis failed:', error);
+        // Fall back to degraded mode
+        isDegraded = true;
+        analysis = undefined;
+      }
+
+      if (analysis) {
+        // Compute keyword gap
+        beforeGap = computeKeywordGap(latex, analysis.keywords);
+        coverageBefore = beforeGap.coveragePct;
+
+        // Pass 2: Tailor with analysis
+        try {
+          tailoredLatex = await tailorLatexWithAnalysis(latex, jdText, analysis, beforeGap.missing);
+        } catch (error) {
+          console.error('LaTeX tailoring failed:', error);
+          return NextResponse.json(
+            {
+              error: 'tailor_failed',
+              message: 'Resume tailoring service is unavailable. Please try again.',
+            },
+            { status: 502 }
+          );
+        }
+
+        // Compute coverage after tailoring
+        const afterGap = computeKeywordGap(tailoredLatex, analysis.keywords);
+        coverageAfter = afterGap.coveragePct;
+      }
     }
 
-    if (!tailoredLatex.trim()) {
+    // Degraded mode: use only company + role
+    if (isDegraded || jdConfidence === 'low' || !tailoredLatex) {
+      try {
+        tailoredLatex = await tailorLatexDegraded(internship.company, internship.role, latex);
+        isDegraded = true;
+      } catch (error) {
+        console.error('Degraded tailoring failed:', error);
+        return NextResponse.json(
+          {
+            error: 'tailor_failed',
+            message: 'Resume tailoring service is unavailable. Please try again.',
+          },
+          { status: 502 }
+        );
+      }
+    }
+
+    if (!tailoredLatex || !tailoredLatex.trim()) {
       return NextResponse.json(
         {
-          error: 'claude_error',
+          error: 'tailor_failed',
           message: 'Resume tailoring service is unavailable. Please try again.',
         },
         { status: 502 }
@@ -250,17 +345,21 @@ export async function POST(request: NextRequest): Promise<NextResponse<TailorRes
     } catch (error) {
       console.error('Usage increment failed:', error);
       // Don't fail the request if we can't increment usage
-      // The tailor succeeded even if we couldn't update the counter
     }
 
     // 9. Return success
-    return NextResponse.json(
-      {
-        latex: tailoredLatex,
-        internshipId,
-      },
-      { status: 200 }
-    );
+    const response: TailorResponse = {
+      latex: tailoredLatex,
+      internshipId,
+      coverageBefore: coverageBefore > 0 ? coverageBefore : undefined,
+      coverageAfter: coverageAfter > 0 ? coverageAfter : undefined,
+    };
+
+    if (isDegraded) {
+      response.degraded = true;
+    }
+
+    return NextResponse.json(response, { status: 200 });
   } catch (error) {
     console.error('Tailor route error:', error);
     return NextResponse.json(

@@ -130,11 +130,46 @@ export async function readListingsFromFirestore(): Promise<Internship[]> {
 
 export async function getInternshipById(internshipId: string): Promise<Internship | null> {
   try {
-    const docRef = doc(db, 'listings', internshipId);
-    const docSnap = await getDoc(docRef);
-    if (!docSnap.exists()) {
+    // The internshipId is typically the appUrl or id field from the internship record.
+    // We need to search for a listing where either appUrl or id matches.
+    // First, try the normalized document ID approach (if internshipId is a URL).
+
+    let docId = '';
+    if (internshipId.startsWith('http')) {
+      // It's a URL (appUrl), normalize it
+      const normalizedId = normalizeListingId(internshipId);
+      docId = normalizedId ? normalizedId.replace(/\//g, '_') : '';
+    } else {
+      // It's already a normalized ID
+      docId = internshipId;
+    }
+
+    if (!docId) {
+      console.error('Failed to normalize internship ID:', internshipId);
       return null;
     }
+
+    const docRef = doc(db, 'listings', docId);
+    const docSnap = await getDoc(docRef);
+    if (!docSnap.exists()) {
+      // Fallback: search all listings to find by appUrl or id
+      console.warn('Document not found by ID, searching by appUrl:', internshipId);
+      const listingsRef = collection(db, 'listings');
+      const snap = await getDocs(listingsRef);
+
+      for (const doc of snap.docs) {
+        const data = doc.data();
+        if (data.appUrl === internshipId || data.id === internshipId) {
+          if (data.active !== false) {
+            const { hash, active, ...listing } = data;
+            return listing as Internship;
+          }
+        }
+      }
+
+      return null;
+    }
+
     const data = docSnap.data();
     // Filter out inactive listings
     if (data.active === false) {

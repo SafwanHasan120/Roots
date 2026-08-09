@@ -6,6 +6,10 @@ export interface TailorResult {
   internshipId: string;
   latex: string;
   tailoredAt: number;
+  originalLatex?: string;
+  coverageBefore?: number;
+  coverageAfter?: number;
+  degraded?: boolean;
 }
 
 /**
@@ -116,6 +120,10 @@ export async function saveTailorResultToFirestore(uid: string, result: TailorRes
     await setDoc(tailorRef, {
       internshipId: result.internshipId,
       latex: result.latex,
+      originalLatex: result.originalLatex,
+      coverageBefore: result.coverageBefore,
+      coverageAfter: result.coverageAfter,
+      degraded: result.degraded,
       tailoredAt: Timestamp.fromMillis(result.tailoredAt),
     });
   } catch (error) {
@@ -146,6 +154,10 @@ export async function loadTailorResultsFromFirestore(uid: string): Promise<Map<s
       const result: TailorResult = {
         internshipId: data.internshipId,
         latex: data.latex || '',
+        originalLatex: data.originalLatex,
+        coverageBefore: data.coverageBefore,
+        coverageAfter: data.coverageAfter,
+        degraded: data.degraded,
         tailoredAt: (data.tailoredAt as Timestamp)?.toMillis?.() || Date.now(),
       };
       results.set(data.internshipId, result);

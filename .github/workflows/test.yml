@@ -19,3 +19,23 @@ jobs:
           cache: 'pnpm'
       - run: cd my-app && pnpm install --frozen-lockfile
       - run: cd my-app && pnpm test
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+      - run: pnpm install --filter infra --frozen-lockfile
+      # Unit tests include the standing negative assertions that enforce the
+      # cost constraints (no NAT Gateway, no VPC-attached Lambda, no IAM
+      # access keys, ...) across every stack.
+      - run: cd infra && pnpm test
+      # Synth is a stronger check than the tests alone: it catches CDK-level
+      # errors that never reach an assertion.
+      - run: cd infra && pnpm cdk synth --quiet
+        env:
+          CDK_DEFAULT_ACCOUNT: '123456789012'

@@ -1,0 +1,53 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# id-token: write is what lets the runner mint an OIDC token. Without it the
+# assume step fails before it reaches AWS. Set at workflow level so the default
+# GITHUB_TOKEN drops to read-only everywhere else.
+permissions:
+  id-token: write
+  contents: read
+
+# Never let two deploys touch the same stacks at once.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: infra/pnpm-lock.yaml
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: gha-cdk-deploy-${{ github.run_id }}
+
+      # TEMPORARY — delete this step once the first run is green.
+      # Expected output is an assumed-role ARN:
+      #   arn:aws:sts::<account>:assumed-role/github-actions-cdk-deploy/gha-cdk-deploy-<run-id>
+      # An IAM user ARN here means a static credential leaked into the
+      # environment and OIDC is not actually being used.
+      - name: Verify assumed identity (temporary)
+        run: aws sts get-caller-identity
+
+      - name: Install
+        working-directory: infra
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy
+        working-directory: infra
+        run: pnpm cdk deploy --all --require-approval never

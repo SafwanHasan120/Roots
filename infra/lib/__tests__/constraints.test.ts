@@ -20,6 +20,7 @@ import { App } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { DataStack } from '../data-stack.js';
 import { ScrapeStack } from '../scrape-stack.js';
+import { VercelAccessStack } from '../vercel-access-stack.js';
 
 /**
  * Resource types that must never appear.
@@ -57,6 +58,12 @@ function synthesizeAll(): Array<{ name: string; template: Template }> {
   const stacks = [
     data,
     new ScrapeStack(app, 'ConstraintsScrape', { env, table: data.table }),
+    new VercelAccessStack(app, 'ConstraintsVercel', {
+      env,
+      table: data.table,
+      vercelTeamSlug: 'safwan-hasans-projects',
+      vercelProjectName: 'intern-tool',
+    }),
   ];
 
   return stacks.map((s) => ({ name: s.stackName, template: Template.fromStack(s) }));

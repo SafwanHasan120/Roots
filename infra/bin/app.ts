@@ -2,6 +2,7 @@
 import { App, Tags } from 'aws-cdk-lib';
 import { DataStack } from '../lib/data-stack.js';
 import { ScrapeStack } from '../lib/scrape-stack.js';
+import { VercelAccessStack } from '../lib/vercel-access-stack.js';
 
 const app = new App();
 
@@ -27,10 +28,23 @@ const scrape = new ScrapeStack(app, 'InternToolScrape', {
   githubTokenParameterName: process.env.GITHUB_TOKEN_PARAM,
 });
 
+// Read access for the Vercel frontend, via OIDC federation. No IAM user, no
+// access key — Vercel mints a token per invocation and trades it for temporary
+// credentials scoped to this role.
+const vercel = new VercelAccessStack(app, 'InternToolVercelAccess', {
+  env,
+  description: 'OIDC role letting Vercel functions read listings from DynamoDB',
+  table: data.table,
+  vercelTeamSlug: 'safwan-hasans-projects',
+  vercelProjectName: 'intern-tool',
+  // Production only: a preview branch should not reach production data.
+  environments: ['production'],
+});
+
 // Applied app-wide so every resource is attributable in Cost Explorer, which
 // is how the $1/month budget gets verified against something other than a
 // whole-account total.
 Tags.of(app).add('project', 'intern-tool');
 Tags.of(app).add('managedBy', 'cdk');
 
-export { data, scrape };
+export { data, scrape, vercel };

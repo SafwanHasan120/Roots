@@ -1,28 +1,43 @@
-import { scrapeAllRepos } from './scraper';
+import { createHash } from 'crypto';
+import { readActiveListings } from './listingsSource';
+import { getListingById } from './listingsRepo';
 import { getInternshipById } from './firestore';
+import { getListingsSource } from './listingsSource';
 import type { Internship } from './types';
 
-// The homepage renders listings straight from scrapeAllRepos(), while the
-// Firestore `listings` collection is only populated by the cron-guarded
-// /api/scrape/refresh. Resolving the tailor target from Firestore alone made
-// every listing that had not yet been persisted 404 even though the user could
-// see it on screen. Resolve against the scrape first so the two cannot drift,
-// and keep Firestore as a fallback for records the scrape no longer returns.
+// Resolves the listing a tailor request refers to.
+//
+// Previously this ran a full scrape per cache miss, because the homepage
+// rendered straight from scrapeAllRepos() and Firestore lagged behind it. Both
+// now read the same DynamoDB table, so the drift that made scraping necessary
+// is gone: resolve against the same store the user is looking at, and fall back
+// to a direct point lookup for listings the recency index no longer carries
+// (deactivated ones, which stay in the base table).
 
 interface CachedIndex {
   byId: Map<string, Internship>;
   cachedAt: number;
 }
 
-// Short TTL: long enough that a burst of tailor clicks costs one scrape, short
-// enough that a listing appearing upstream shows up without a redeploy. The
-// homepage revalidates hourly, so anything longer would lag what the user sees.
+// Long enough that a burst of tailor clicks costs one query, short enough that a
+// newly scraped listing resolves without a redeploy.
 const INDEX_TTL_MS = 10 * 60 * 1000;
 
 let cachedIndex: CachedIndex | null = null;
 
-// Mirrors normalizeListingId + listingDocId in lib/firestore.ts so a listing
-// resolves the same whether it arrives as a raw appUrl or a Firestore doc id.
+/**
+ * Surrogate listing id: sha256 of the appUrl, truncated to 32 hex chars.
+ *
+ * Must stay identical to listingId() in infra/lib/keys.ts — the scrape worker
+ * writes items under this id, and a mismatch makes every point lookup miss.
+ * lib/__tests__/listingResolver.test.ts asserts the two agree.
+ */
+export function listingIdFor(appUrl: string): string {
+  return createHash('sha256').update(appUrl).digest('hex').slice(0, 32);
+}
+
+// Legacy Firestore doc-id form, kept so ids minted before the migration still
+// resolve against the Firestore fallback.
 function normalizeKey(value: string): string {
   if (!value) return '';
   try {
@@ -36,10 +51,13 @@ function normalizeKey(value: string): string {
 function indexListings(listings: Internship[]): Map<string, Internship> {
   const byId = new Map<string, Internship>();
   for (const listing of listings) {
-    // Index under every form the client might send: the raw id, the appUrl,
-    // and the normalized doc-id form.
+    // Index under every form a client might send: the stored id, the raw
+    // appUrl, the surrogate hash, and the legacy Firestore doc-id form.
     if (listing.id) byId.set(listing.id, listing);
-    if (listing.appUrl) byId.set(listing.appUrl, listing);
+    if (listing.appUrl) {
+      byId.set(listing.appUrl, listing);
+      byId.set(listingIdFor(listing.appUrl), listing);
+    }
     const normalized = normalizeKey(listing.appUrl || listing.id);
     if (normalized) byId.set(normalized, listing);
   }
@@ -51,7 +69,9 @@ async function getIndex(): Promise<Map<string, Internship>> {
     return cachedIndex.byId;
   }
 
-  const listings = await scrapeAllRepos();
+  // throwOnEmpty:false — an empty store must not make tailoring impossible for
+  // a listing that is still resolvable by point lookup below.
+  const listings = await readActiveListings({ throwOnEmpty: false });
   const byId = indexListings(listings);
   cachedIndex = { byId, cachedAt: Date.now() };
   return byId;
@@ -67,21 +87,34 @@ async function getIndex(): Promise<Map<string, Internship>> {
 export async function resolveInternship(internshipId: string): Promise<Internship | null> {
   if (!internshipId?.trim()) return null;
 
-  let index: Map<string, Internship>;
+  let index: Map<string, Internship> | null = null;
   try {
     index = await getIndex();
   } catch (e) {
-    // A failed scrape must not make tailoring impossible for listings that
-    // were persisted previously.
-    console.error('Listing scrape failed during resolve, falling back to Firestore:', e);
-    return getInternshipById(internshipId);
+    // A failed read must not make tailoring impossible for listings that can
+    // still be resolved directly.
+    console.error('Listing read failed during resolve, falling back to point lookup:', e);
   }
 
-  const direct = index.get(internshipId) || index.get(normalizeKey(internshipId));
-  if (direct) return direct;
+  if (index) {
+    const direct = index.get(internshipId) || index.get(normalizeKey(internshipId));
+    if (direct) return direct;
+  }
 
-  // Not in the current scrape: the listing may have aged out upstream but
-  // still exist in Firestore from an earlier refresh.
+  // Not in the active index: the listing may have been deactivated by the
+  // sweep. It remains in the base table, so a point lookup still finds it.
+  if (getListingsSource() === 'ddb') {
+    // Accept either the surrogate id directly, or an appUrl to hash.
+    const byId = await getListingById(internshipId);
+    if (byId) return byId;
+
+    if (internshipId.startsWith('http')) {
+      const hashed = await getListingById(listingIdFor(internshipId));
+      if (hashed) return hashed;
+    }
+    return null;
+  }
+
   return getInternshipById(internshipId);
 }
 

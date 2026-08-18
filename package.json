@@ -1,6 +1,9 @@
 {
 	"name": "intern-tool",
 	"private": true,
+	"devDependencies": {
+		"esbuild": "^0.28.2"
+	},
 	"scripts": {
 		"test": "pnpm -r test"
 	}

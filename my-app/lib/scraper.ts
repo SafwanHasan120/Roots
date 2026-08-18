@@ -19,7 +19,9 @@ const FALLBACK_REPOS = [
   'https://raw.githubusercontent.com/sndsh404/summer-2027-internships/main/README.md',
 ];
 
-function loadSources() {
+// Exported for the AWS scrape dispatcher, which enumerates sources to fan out
+// one SQS message per source. Behavior is unchanged for existing callers.
+export function loadSources() {
   try {
     const sources = sourcesData.sources || [];
     return sources.filter((s) => s.enabled).map((s) => s.url);
@@ -30,7 +32,8 @@ function loadSources() {
 }
 
 // Derive a short repo slug ("owner/repo") from a raw GitHub URL for the `source` field.
-function repoSlug(url: string): string {
+// Exported so the worker can key per-source scrape state identically.
+export function repoSlug(url: string): string {
   const m = url.match(/githubusercontent\.com\/([^/]+)\/([^/]+)\//);
   return m ? `${m[1]}/${m[2]}` : url;
 }
@@ -403,6 +406,95 @@ async function scrapeRepo(url: string, scrapeState?: any, useNoStore: boolean = 
   });
 
   return { listings, etag, sha };
+}
+
+/** Per-source state persisted between runs (etag/sha short-circuit + circuit breaker). */
+export interface SourceState {
+  etag?: string;
+  sha?: string;
+  lastOk?: number;
+  failCount: number;
+  circuitBreakerUntil?: number;
+}
+
+export interface ScrapeOneSourceResult {
+  listings: Internship[];
+  state: SourceState;
+  /** True when the source was skipped because its circuit breaker is open. */
+  skipped: boolean;
+  /** True when etag/sha matched and the source returned no new content. */
+  unchanged: boolean;
+}
+
+export const CIRCUIT_BREAKER_THRESHOLD = 3;
+export const CIRCUIT_BREAKER_DURATION_MS = 30 * 60 * 1000; // 30 min
+
+/**
+ * Scrape exactly one source and return its listings plus updated state.
+ *
+ * Extracted from scrapeAllReposWithState so the AWS worker Lambda can process a
+ * single source per SQS message. The multi-source path is unchanged and still
+ * uses its own Promise.allSettled loop — this is additive, not a rewrite of it.
+ *
+ * Deduplication is deliberately NOT done here: with one source per invocation
+ * there is nothing to dedupe against, and cross-source dedup now happens in
+ * DynamoDB via the listingId (a hash of appUrl), which collapses duplicates
+ * from different sources onto the same item.
+ *
+ * Throws on fetch failure so the caller (and SQS) can treat it as a retryable
+ * message rather than a silent empty result.
+ */
+export async function scrapeOneSource(
+  url: string,
+  priorState?: SourceState,
+  now: number = Date.now()
+): Promise<ScrapeOneSourceResult> {
+  const state: SourceState = { failCount: 0, ...priorState };
+
+  // Circuit breaker: skip while open, reset once it has expired.
+  if (state.circuitBreakerUntil) {
+    if (now > state.circuitBreakerUntil) {
+      state.circuitBreakerUntil = undefined;
+      state.failCount = 0;
+    } else {
+      return { listings: [], state, skipped: true, unchanged: false };
+    }
+  }
+
+  try {
+    // scrapeRepo reads prior etag/sha out of the multi-source shape, so wrap
+    // this source's state to match what it expects.
+    const slug = repoSlug(url);
+    const { listings, etag, sha } = await scrapeRepo(url, {
+      perSource: { [slug]: state },
+    });
+
+    const unchanged = listings.length === 0 && (etag !== undefined || sha !== undefined);
+
+    return {
+      listings,
+      state: {
+        ...state,
+        ...(etag && { etag }),
+        ...(sha && { sha }),
+        lastOk: now,
+        failCount: 0,
+        circuitBreakerUntil: undefined,
+      },
+      skipped: false,
+      unchanged,
+    };
+  } catch (err) {
+    // Record the failure and trip the breaker at the threshold, then rethrow so
+    // the message is retried and eventually dead-lettered.
+    state.failCount = (state.failCount || 0) + 1;
+    if (state.failCount >= CIRCUIT_BREAKER_THRESHOLD) {
+      state.circuitBreakerUntil = now + CIRCUIT_BREAKER_DURATION_MS;
+    }
+    throw Object.assign(err instanceof Error ? err : new Error(String(err)), {
+      sourceState: state,
+    });
+  }
 }
 
 export async function scrapeAllReposWithState(scrapeState?: any, useNoStore: boolean = false): Promise<{

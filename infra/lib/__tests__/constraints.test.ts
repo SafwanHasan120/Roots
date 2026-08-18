@@ -16,9 +16,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { App, Stage } from 'aws-cdk-lib';
+import { App } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { DataStack } from '../data-stack.js';
+import { ScrapeStack } from '../scrape-stack.js';
 
 /**
  * Resource types that must never appear.
@@ -50,7 +51,13 @@ function synthesizeAll(): Array<{ name: string; template: Template }> {
   const app = new App();
   const env = { account: '123456789012', region: 'us-west-2' };
 
-  const stacks = [new DataStack(app, 'ConstraintsData', { env })];
+  // Every stack in the app must appear here, so a forbidden resource added to
+  // any of them fails CI without anyone remembering to extend this file.
+  const data = new DataStack(app, 'ConstraintsData', { env });
+  const stacks = [
+    data,
+    new ScrapeStack(app, 'ConstraintsScrape', { env, table: data.table }),
+  ];
 
   return stacks.map((s) => ({ name: s.stackName, template: Template.fromStack(s) }));
 }

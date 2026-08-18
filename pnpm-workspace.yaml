@@ -1,6 +1,7 @@
 packages:
   - my-app
   - infra
+  - services
 
 # Merged up from my-app/pnpm-workspace.yaml, which became inert once my-app
 # joined this workspace — build settings are resolved at the workspace root.

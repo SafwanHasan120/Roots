@@ -82,12 +82,33 @@ index entry and leaves the item and every reference to it in place.
 
 ## Indexes
 
-### GSI1 — recency, sharded
+### GSI1v2 — recency, sharded
 
 ```
 GSI1PK = ACTIVE#<shard>     shard = parseInt(listingId[0:8], 16) % 4
 GSI1SK = <zero-padded dateMs>#<listingId>
 ```
+
+> **Named `GSI1v2`, not `GSI1`.** The original index omitted `lastSeenRun` from
+> its INCLUDE projection. The sweep reads that attribute to decide liveness, and
+> an unprojected attribute returns as `undefined` rather than erroring — so every
+> row looked never-seen and a single sweep deactivated all 419 live listings.
+>
+> DynamoDB cannot alter an existing index's projection, so the fix required a new
+> index name. Replacing an index is inherently **two deploys**, because at most
+> one GSI may be created or deleted per stack update:
+>
+> ```bash
+> KEEP_LEGACY_GSI1=1 pnpm cdk deploy InternToolData   # 1. add GSI1v2, wait for ACTIVE
+> pnpm cdk deploy --all                               # 2. drop GSI1
+> ```
+>
+> The legacy stub in `data-stack.ts` must mirror the deployed index *exactly* —
+> any difference reads as an in-place projection change and is rejected. The
+> attribute names (`GSI1PK`/`GSI1SK`) never changed, so no item was rewritten.
+>
+> **Anything the sweep or read path reads must be in this projection.** There is
+> no error when it is missing, only wrong answers.
 
 Serves the dominant query: most recent active listings across all companies. The
 read path issues **one query per shard in parallel** and merges on `GSI1SK`
@@ -174,6 +195,17 @@ Mechanism:
    `GSI1PK`.
 4. **Reactivation is automatic.** If a listing reappears in a later scrape, the
    normal upsert re-adds `GSI1PK`. The sweep writes no tombstone.
+
+**Mass-deactivation circuit breaker.** `runSweep` aborts if more than 50% of a
+non-trivial corpus (≥10 rows) would be deactivated for *absence*. Losing most
+listings in one run means the input is wrong — a missing projection, corrupt run
+history — not that every employer withdrew overnight. Expiry is exempt, since a
+genuine backlog of old postings can legitimately be a large share.
+
+**Liveness is stamped even when content is unchanged.** The idempotent upsert
+skips the write on a hash match, so `ddb.touchListing` updates `lastSeenAt` /
+`lastSeenRun` separately. Without that, a listing whose text never changes would
+age out of the grace window and be deactivated while still live.
 
 The +15 minute offset assumes the two-source queue drains well inside 15
 minutes, which it does. If sources grow substantially this becomes a race, and

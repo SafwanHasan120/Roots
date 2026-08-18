@@ -56,12 +56,12 @@ describe('DataStack', () => {
   });
 
   describe('indexes', () => {
-    it('defines exactly two GSIs, named GSI1 and GSI2', () => {
+    it('defines exactly two GSIs: recency and company', () => {
       const tables = template.findResources('AWS::DynamoDB::GlobalTable');
       const gsis = Object.values(tables)[0].Properties.GlobalSecondaryIndexes;
 
       expect(gsis).toHaveLength(2);
-      expect(gsis.map((g: { IndexName: string }) => g.IndexName)).toEqual([
+      expect(gsis.map((g: { IndexName: string }) => g.IndexName).sort()).toEqual([
         INDEX.recency,
         INDEX.company,
       ]);
@@ -103,6 +103,18 @@ describe('DataStack', () => {
       for (const attr of ['company', 'role', 'location', 'appUrl', 'dateMs', 'prestigeScore']) {
         expect(gsi1.Projection.NonKeyAttributes).toContain(attr);
       }
+    });
+
+    it('projects lastSeenRun, which the sweep reads to decide liveness', () => {
+      // Regression: this was missing, so every row the sweep read looked
+      // never-seen and a single run deactivated all 419 live listings. An
+      // absent attribute in an INCLUDE projection reads as undefined rather
+      // than erroring, so nothing surfaces the mistake at query time.
+      const tables = template.findResources('AWS::DynamoDB::GlobalTable');
+      const gsi1 = Object.values(tables)[0].Properties.GlobalSecondaryIndexes.find(
+        (g: { IndexName: string }) => g.IndexName === INDEX.recency,
+      );
+      expect(gsi1.Projection.NonKeyAttributes).toContain('lastSeenRun');
     });
   });
 

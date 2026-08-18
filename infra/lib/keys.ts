@@ -36,8 +36,17 @@ export const ATTR = {
 } as const;
 
 export const INDEX = {
-  /** Recency across all active listings. Sharded; query all shards and merge. */
-  recency: 'GSI1',
+  /**
+   * Recency across all active listings. Sharded; query all shards and merge.
+   *
+   * Named GSI1v2 because DynamoDB cannot alter an existing index's projection
+   * ("Cannot update a GSI's KeySchema or Projection") — changing it requires a
+   * new index name. The original GSI1 omitted `lastSeenRun`, which the sweep
+   * reads to decide liveness; without it every row looked never-seen and one
+   * sweep deactivated the entire corpus. The attribute names (GSI1PK/GSI1SK)
+   * are unchanged, so no item needs rewriting.
+   */
+  recency: 'GSI1v2',
   /** Per-company lookup. */
   company: 'GSI2',
 } as const;

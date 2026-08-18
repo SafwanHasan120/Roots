@@ -43,6 +43,41 @@ export class DataStack extends Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: false },
 
       globalSecondaryIndexes: [
+        // Legacy recency index, retained only while GSI1v2 is being created.
+        //
+        // DynamoDB permits at most ONE index creation-or-deletion per stack
+        // update, so replacing an index is inherently two deploys:
+        //   1. KEEP_LEGACY_GSI1=1 cdk deploy   (adds GSI1v2)
+        //   2. cdk deploy                      (drops GSI1)
+        // Attempting both at once fails with "Cannot perform more than one GSI
+        // creation or deletion in a single update".
+        ...(process.env.KEEP_LEGACY_GSI1
+          ? [
+              {
+                indexName: 'GSI1',
+                partitionKey: { name: ATTR.gsi1pk, type: AttributeType.STRING },
+                sortKey: { name: ATTR.gsi1sk, type: AttributeType.STRING },
+                // Must mirror the DEPLOYED index exactly. Any difference reads
+                // as an in-place projection change, which DynamoDB rejects.
+                projectionType: ProjectionType.INCLUDE,
+                nonKeyAttributes: [
+                  'id',
+                  'company',
+                  'companyUrl',
+                  'role',
+                  'location',
+                  'appUrl',
+                  'datePosted',
+                  'dateMs',
+                  'prestigeScore',
+                  'source',
+                  'linkHealth',
+                  'isExpired',
+                  'expirationReason',
+                ],
+              },
+            ]
+          : []),
         {
           // Recency across all active listings, sharded on a hash of the
           // listing id. Inactive listings omit GSI1PK entirely and so fall out
@@ -69,6 +104,10 @@ export class DataStack extends Stack {
             'linkHealth',
             'isExpired',
             'expirationReason',
+            // Required by the sweep, which reads liveness straight off this
+            // index. Omitting it made every listing look never-seen and
+            // deactivated the entire corpus on the first live sweep.
+            'lastSeenRun',
           ],
         },
         {

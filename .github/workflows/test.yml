@@ -20,6 +20,19 @@ jobs:
       - run: cd my-app && pnpm install --frozen-lockfile
       - run: cd my-app && pnpm test
 
+  services:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+      # services imports from my-app/lib, so both workspaces must be installed.
+      - run: pnpm install --filter services --filter my-app --frozen-lockfile
+      - run: cd services && pnpm test
+
   infra:
     runs-on: ubuntu-latest
     steps:
@@ -29,7 +42,9 @@ jobs:
         with:
           node-version: 20
           cache: 'pnpm'
-      - run: pnpm install --filter infra --frozen-lockfile
+      # Bundling the Lambdas pulls in services/ and my-app/lib, and esbuild
+      # lives at the workspace root, so this needs a full install.
+      - run: pnpm install --frozen-lockfile
       # Unit tests include the standing negative assertions that enforce the
       # cost constraints (no NAT Gateway, no VPC-attached Lambda, no IAM
       # access keys, ...) across every stack.

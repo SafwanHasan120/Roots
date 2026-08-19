@@ -36,6 +36,30 @@ signer for the tailor function URL, and the S3 client that presigns artifacts.
 A presigner with no credentials fails at *use* time with a 403, not at signing
 time, which is a slow way to discover the mistake.
 
+### The trust policy must match Vercel's actual `sub` claim
+
+`Could not load credentials from any providers` is also what a **sub-claim
+mismatch** looks like from the app's side — the assume is rejected, so the
+provider yields nothing, and the error says nothing about why.
+
+The trust policy uses exact-match `StringEquals` (a wildcard would let any
+project in the team assume the role), so the project name has to be right to
+the character. **It is the Vercel project name, not the directory name**: this
+project is `roots-yye7`, derived from the repo `SafwanHasan120/roots` plus a
+suffix, while the directory is `intern-tool`.
+
+Read the real value off the `sub` row in Project → Settings → Security → OIDC
+Federation, and compare:
+
+```bash
+aws iam get-role --role-name vercel-intern-tool-read --profile roots \
+  --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals'
+```
+
+If they differ, fix `vercelProjectName` in `infra/bin/app.ts` and redeploy
+`InternToolVercelAccess`. Never "fix" it by loosening `StringEquals` to
+`StringLike`.
+
 ## Environment variables
 
 Set these on the Vercel project (Production):

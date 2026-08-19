@@ -5,7 +5,7 @@ import { DataStack } from '../data-stack.js';
 import { VercelAccessStack } from '../vercel-access-stack.js';
 
 const TEAM = 'safwan-hasans-projects';
-const PROJECT = 'intern-tool';
+const PROJECT = 'roots-yye7';
 
 function synth(environments?: string[]): Template {
   const app = new App();

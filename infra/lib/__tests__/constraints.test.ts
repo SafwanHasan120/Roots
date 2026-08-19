@@ -64,7 +64,7 @@ function synthesizeAll(): Array<{ name: string; template: Template }> {
       env,
       table: data.table,
       vercelTeamSlug: 'safwan-hasans-projects',
-      vercelProjectName: 'intern-tool',
+      vercelProjectName: 'roots-yye7',
     }),
   ];
 

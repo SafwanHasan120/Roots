@@ -38,7 +38,11 @@ const vercel = new VercelAccessStack(app, 'InternToolVercelAccess', {
   description: 'OIDC role letting Vercel functions read listings from DynamoDB',
   table: data.table,
   vercelTeamSlug: 'safwan-hasans-projects',
-  vercelProjectName: 'intern-tool',
+  // The Vercel PROJECT name, which is not the directory name. Vercel derived it
+  // from the repo (SafwanHasan120/roots) and appended a suffix. Read it off the
+  // `sub` claim in Project → Settings → Security → OIDC Federation; a wrong
+  // value here rejects every assume with an unhelpful credentials error.
+  vercelProjectName: 'roots-yye7',
   // Production only: a preview branch should not reach production data.
   environments: ['production'],
 });

@@ -45,14 +45,25 @@ export const AWS_ROLE_ARN = process.env.AWS_ROLE_ARN;
 /**
  * Credentials for the current environment.
  *
- * On Vercel: exchange the request-scoped OIDC token for a role session.
- * Locally: return undefined so the SDK falls back to the shared profile.
+ * On Vercel: exchange the OIDC token for a role session.
+ * Locally: return undefined so the SDK falls back to the shared AWS profile.
+ *
+ * Two things this must NOT do, both of which broke it before:
+ *
+ * 1. Read VERCEL_OIDC_TOKEN at module scope. Vercel injects that token per
+ *    invocation, so at import time it is absent — a module-level check
+ *    permanently disables OIDC on a warm function.
+ * 2. Gate on the token's presence at all. `awsCredentialsProvider` reads it
+ *    itself, lazily, at the moment credentials are needed. Checking first only
+ *    creates a window where we silently fall through to a provider chain that
+ *    cannot work on Vercel, producing "Could not load credentials from any
+ *    providers" with no hint that OIDC was skipped.
+ *
+ * Deciding purely on AWS_ROLE_ARN means: role configured -> use OIDC and let it
+ * surface its own errors; no role -> local development.
  */
 export function resolveCredentials() {
-  // VERCEL_OIDC_TOKEN is injected per invocation. Keying off it (rather than
-  // AWS_ROLE_ARN alone) means `vercel env pull` for local dev does not send us
-  // down the OIDC path with no token to exchange.
-  if (!AWS_ROLE_ARN || !process.env.VERCEL_OIDC_TOKEN) return undefined;
+  if (!AWS_ROLE_ARN) return undefined;
   return awsCredentialsProvider({ roleArn: AWS_ROLE_ARN });
 }
 

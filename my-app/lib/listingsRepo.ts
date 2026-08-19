@@ -29,6 +29,31 @@ export function allActiveShardKeys(): string[] {
 }
 
 /**
+ * Say WHICH part of the credential setup is missing.
+ *
+ * "Could not load credentials from any providers" is the same message whether
+ * the role ARN is unset, the OIDC token is absent, or AWS rejected the assume —
+ * three very different fixes. This cost two debugging rounds, so the error now
+ * reports the state it can actually observe.
+ */
+function describeCredentialFailure(): string {
+  const onVercel = Boolean(process.env.VERCEL);
+  const hasRole = Boolean(process.env.AWS_ROLE_ARN);
+  const hasToken = Boolean(process.env.VERCEL_OIDC_TOKEN);
+
+  if (onVercel && !hasRole) {
+    return 'AWS_ROLE_ARN is not set on this deployment, so no role could be assumed';
+  }
+  if (onVercel && !hasToken) {
+    return 'No VERCEL_OIDC_TOKEN in this invocation — enable OIDC Federation under Project → Settings → Security, then redeploy';
+  }
+  if (onVercel) {
+    return 'AWS rejected the OIDC assume — check the role trust policy matches this project\'s sub claim exactly';
+  }
+  return 'No AWS credentials available (running outside Vercel; check your AWS profile)';
+}
+
+/**
  * Fields ranker.ts requires. A row missing any of them is dropped rather than
  * passed on: ranker.ts is frozen, so it must receive exactly the shape it
  * already expects.
@@ -147,7 +172,7 @@ export async function queryRecent(options: QueryRecentOptions = {}): Promise<Int
     perShard = await Promise.all(allActiveShardKeys().map((key) => queryShard(key, limit)));
   } catch (err) {
     if (isCredentialError(err)) {
-      throw new CredentialError('DynamoDB rejected our credentials', { cause: err });
+      throw new CredentialError(describeCredentialFailure(), { cause: err });
     }
     throw err;
   }

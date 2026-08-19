@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { rankInternships } from '@/lib/ranker';
-import { readActiveListings } from '@/lib/listingsSource';
+import { queryRecent } from '@/lib/listingsRepo';
 import { CredentialError, EmptyResultError } from '@/lib/ddbClient';
 
 export async function GET(request: NextRequest) {
@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
   const location = searchParams.get('location') ?? '';
 
   try {
-    const all = await readActiveListings();
+    const all = await queryRecent();
     const internships = rankInternships(all, location);
 
     return NextResponse.json(

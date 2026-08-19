@@ -17,7 +17,10 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['lib/**/*.ts'],
-      exclude: ['lib/__tests__', 'lib/firebase.ts', 'lib/firestore.ts', 'lib/firestore-sync.ts', 'lib/tailorRateLimiter.ts'],
+      // firebase.ts / firestore-sync.ts still back user data (resume,
+      // favorites, tailor results). lib/firestore.ts and tailorRateLimiter.ts
+      // were deleted with the listings and quota migrations.
+      exclude: ['lib/__tests__', 'lib/firebase.ts', 'lib/firestore-sync.ts'],
     },
   },
 });

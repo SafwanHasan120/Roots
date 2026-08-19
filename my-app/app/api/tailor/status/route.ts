@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { getDocClient, TABLE_NAME, AWS_REGION } from '@/lib/ddbClient';
+import { getDocClient, TABLE_NAME, AWS_REGION, resolveCredentials } from '@/lib/ddbClient';
 import { verifyIdToken } from '@/lib/verifyFirebaseToken';
 
 /**
@@ -14,7 +14,14 @@ import { verifyIdToken } from '@/lib/verifyFirebaseToken';
  * s3:GetObject, which the Vercel OIDC role is granted for `jobs/*` only.
  */
 
-const s3 = new S3Client({ region: AWS_REGION, maxAttempts: 3 });
+// Presigning requires real credentials: the signature is generated from them,
+// so the default chain failing here produces a URL that 403s on use rather than
+// an error at signing time.
+const s3 = new S3Client({
+  region: AWS_REGION,
+  credentials: resolveCredentials(),
+  maxAttempts: 3,
+});
 
 /** Short-lived: long enough to download, short enough that a leaked link dies quickly. */
 const URL_TTL_SECONDS = 15 * 60;

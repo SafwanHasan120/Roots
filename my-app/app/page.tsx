@@ -1,4 +1,4 @@
-import { readActiveListings } from '@/lib/listingsSource';
+import { queryRecent } from '@/lib/listingsRepo';
 import { rankInternships } from '@/lib/ranker';
 import HomeContent from '@/components/HomeContent';
 import type { Internship } from '@/lib/types';
@@ -16,14 +16,14 @@ export const revalidate = 3600;
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
-  // Reads from DynamoDB (or Firestore, per LISTINGS_SOURCE) instead of scraping
-  // on render. The scrape now runs on a schedule in AWS, so this request path
-  // no longer makes three network hops per source before it can draw anything.
+  // Reads from DynamoDB instead of scraping on render. The scrape runs on a
+  // schedule in AWS, so this request path no longer makes three network hops
+  // per source before it can draw anything.
   //
-  // readActiveListings throws on an empty result rather than returning []. That
-  // is deliberate: an empty table means the scrape broke, and throwing lets ISR
+  // queryRecent throws on an empty result rather than returning []. That is
+  // deliberate: an empty table means the scrape broke, and throwing lets ISR
   // keep serving the last good render instead of caching an empty page.
-  const all = await readActiveListings();
+  const all = await queryRecent();
   const internships: Internship[] = rankInternships(all);
 
   return <HomeContent internships={internships} />;

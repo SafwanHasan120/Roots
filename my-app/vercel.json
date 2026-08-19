@@ -1,8 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/scrape/refresh",
-      "schedule": "0 13 * * *"
-    }
-  ]
-}
+{}

@@ -1,8 +1,5 @@
 import { createHash } from 'crypto';
-import { readActiveListings } from './listingsSource';
-import { getListingById } from './listingsRepo';
-import { getInternshipById } from './firestore';
-import { getListingsSource } from './listingsSource';
+import { queryRecent, getListingById } from './listingsRepo';
 import type { Internship } from './types';
 
 // Resolves the listing a tailor request refers to.
@@ -36,8 +33,9 @@ export function listingIdFor(appUrl: string): string {
   return createHash('sha256').update(appUrl).digest('hex').slice(0, 32);
 }
 
-// Legacy Firestore doc-id form, kept so ids minted before the migration still
-// resolve against the Firestore fallback.
+// Legacy Firestore doc-id form. Firestore is gone, but a client may still hold
+// an id minted in that shape (a bookmarked link, cached state), so the index is
+// keyed under it too.
 function normalizeKey(value: string): string {
   if (!value) return '';
   try {
@@ -71,7 +69,7 @@ async function getIndex(): Promise<Map<string, Internship>> {
 
   // throwOnEmpty:false — an empty store must not make tailoring impossible for
   // a listing that is still resolvable by point lookup below.
-  const listings = await readActiveListings({ throwOnEmpty: false });
+  const listings = await queryRecent({ throwOnEmpty: false });
   const byId = indexListings(listings);
   cachedIndex = { byId, cachedAt: Date.now() };
   return byId;
@@ -103,19 +101,15 @@ export async function resolveInternship(internshipId: string): Promise<Internshi
 
   // Not in the active index: the listing may have been deactivated by the
   // sweep. It remains in the base table, so a point lookup still finds it.
-  if (getListingsSource() === 'ddb') {
-    // Accept either the surrogate id directly, or an appUrl to hash.
-    const byId = await getListingById(internshipId);
-    if (byId) return byId;
+  // Accept either the surrogate id directly, or an appUrl to hash.
+  const byId = await getListingById(internshipId);
+  if (byId) return byId;
 
-    if (internshipId.startsWith('http')) {
-      const hashed = await getListingById(listingIdFor(internshipId));
-      if (hashed) return hashed;
-    }
-    return null;
+  if (internshipId.startsWith('http')) {
+    return getListingById(listingIdFor(internshipId));
   }
 
-  return getInternshipById(internshipId);
+  return null;
 }
 
 export function clearListingIndexCache(): void {

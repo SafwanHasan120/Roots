@@ -1,7 +1,7 @@
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Sha256 } from '@aws-crypto/sha256-js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { AWS_REGION } from './ddbClient';
+import { AWS_REGION, resolveCredentials } from './ddbClient';
 
 /**
  * SigV4-signed fetch for the tailor function URL.
@@ -14,7 +14,9 @@ import { AWS_REGION } from './ddbClient';
  * route handlers, which hold the credentials.
  */
 
-const credentials = fromNodeProviderChain();
+// On Vercel this is the OIDC exchange; locally it falls back to the shared
+// profile. The default chain alone cannot see Vercel's token.
+const credentials = resolveCredentials() ?? fromNodeProviderChain();
 
 export async function signedFetch(
   url: string,

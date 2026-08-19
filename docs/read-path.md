@@ -1,21 +1,40 @@
 # Read path (Sprint 2)
 
-How the Vercel frontend gets listings out of DynamoDB, and how to roll the
-cutover back without a code change.
+How the Vercel frontend gets listings out of DynamoDB.
 
 ## Shape
 
 ```
-Vercel function ──assume role via OIDC──> AWS STS
+Vercel function ──OIDC token ──> STS ──> role session
        │
-       └─ lib/listingsSource.ts     (LISTINGS_SOURCE flag)
-            ├─ ddb        -> lib/listingsRepo.ts -> DynamoDB GSI1v2
-            └─ firestore  -> lib/firestore.ts    (deleted in 2b)
+       └─ lib/listingsRepo.ts ──> DynamoDB GSI1v2 (4 shards, merged)
 ```
 
-Everything funnels through `readActiveListings()`. Callers pass the result to
-`rankInternships()` themselves, so ranking is identical on both backends —
-`ranker.ts` is frozen and must receive the same shape either way.
+Callers query `queryRecent()` and pass the result to `rankInternships()`
+themselves — `ranker.ts` is frozen and must receive exactly the shape it
+already expects.
+
+**The Firestore path is gone** (Sprint 2b). `lib/firestore.ts`,
+`lib/listingsSource.ts`, the `LISTINGS_SOURCE` flag, and
+`/api/scrape/refresh` were deleted; the Vercel cron block went with them.
+`lib/firestore-sync.ts` remains — it backs user resumes, favorites and tailor
+results, which never moved to DynamoDB.
+
+Rolling the read path back now means reverting the commit, not flipping an
+environment variable.
+
+## Credentials
+
+The SDK's **default provider chain cannot see Vercel's OIDC token** — it checks
+env vars, the shared config file, and IMDS, none of which exist there, and fails
+with `Could not load credentials from any providers`. `resolveCredentials()` in
+`lib/ddbClient.ts` uses `@vercel/functions/oidc` explicitly, keyed on
+`VERCEL_OIDC_TOKEN` so local development still falls through to the AWS profile.
+
+Every AWS client on the Vercel side must use it: the DynamoDB client, the SigV4
+signer for the tailor function URL, and the S3 client that presigns artifacts.
+A presigner with no credentials fails at *use* time with a 403, not at signing
+time, which is a slow way to discover the mistake.
 
 ## Environment variables
 
@@ -26,7 +45,6 @@ Set these on the Vercel project (Production):
 | `DDB_TABLE_NAME` | `InternToolData-AppTable815C50BC-DR7EUEW9SOCY` | Which table to read |
 | `AWS_REGION` | `us-west-2` | |
 | `AWS_ROLE_ARN` | output of `InternToolVercelAccess` | Role assumed via OIDC |
-| `LISTINGS_SOURCE` | `ddb` | `firestore` to roll back |
 | `METRICS_SECRET` | any long random string | Guards `/api/metrics` |
 
 **No AWS access key.** Vercel mints an OIDC token per invocation and trades it
@@ -34,14 +52,14 @@ for temporary credentials. Enable it under Project → Settings → Security →
 Secure Backend Access (OIDC Federation) before the first deploy; without it the
 SDK finds no credentials and the read path returns 503.
 
-## Rolling back (2a)
+## Rolling back
 
-Set `LISTINGS_SOURCE=firestore` in Vercel and redeploy. No code revert, no
-rebuild of the scrape path. Firestore stays current because the Vercel cron is
-still running until 2b removes it.
+Revert the commit and redeploy. There is no longer an environment-variable
+lever: 2b deleted the Firestore branch, and the Vercel cron that kept Firestore
+current went with it.
 
-**Exercise this both directions before relying on it.** A rollback path first
-tested during an incident is not a rollback path.
+Listings are disposable — the scheduled scrape rebuilds the table daily — so the
+real recovery for bad data is re-running the dispatcher, not restoring a backup.
 
 ## Failure modes, and why each behaves as it does
 
@@ -89,11 +107,9 @@ curl -H "Authorization: Bearer $METRICS_SECRET" https://<host>/api/metrics
 `linkHealth` in that response is finally meaningful — nothing populated the
 field before the scrape worker started probing URLs in Sprint 1.
 
-## Still to do (Sprint 2b)
+## Sprint 2b: done
 
-Only after 2a has run a full day in production:
-
-- delete `lib/firestore.ts`, `lib/listingsSource.ts`, and the `firestore` branch
-- delete `app/api/scrape/refresh/route.ts`
-- remove `crons` from `vercel.json`
-- drop `LISTINGS_SOURCE` from Vercel
+Deleted `lib/firestore.ts`, `lib/listingsSource.ts`,
+`app/api/scrape/refresh/route.ts`, the `crons` block in `vercel.json`, and the
+unused `firebase-admin` dependency. `LISTINGS_SOURCE` can be removed from the
+Vercel environment; nothing reads it.

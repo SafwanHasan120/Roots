@@ -1,5 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { awsCredentialsProvider } from '@vercel/functions/oidc';
 
 /**
  * Shared DynamoDB client for the read path.
@@ -7,10 +8,14 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
  * Module-scoped so a warm Vercel function reuses the connection pool across
  * requests rather than paying TLS setup per render.
  *
- * Credentials are NOT configured here. On Vercel the function assumes an IAM
- * role via OIDC and the SDK's default provider chain picks it up from the
- * ambient environment; locally it comes from the usual AWS profile. There is no
- * access key anywhere in this codebase.
+ * Credentials come from Vercel's OIDC token, exchanged for a short-lived role
+ * session. There is no access key anywhere in this codebase.
+ *
+ * The SDK's DEFAULT provider chain does not find that token — it looks for
+ * env vars, a shared config file, and IMDS, none of which exist on Vercel, and
+ * fails with "Could not load credentials from any providers". The web-identity
+ * provider below is what actually reads it. Locally the token is absent, so we
+ * fall through to the usual AWS profile instead.
  */
 
 export const TABLE_NAME = process.env.DDB_TABLE_NAME ?? '';
@@ -34,11 +39,29 @@ export class EmptyResultError extends Error {
 
 let cached: DynamoDBDocumentClient | null = null;
 
+/** The role Vercel assumes. Absent locally, where the AWS profile is used. */
+export const AWS_ROLE_ARN = process.env.AWS_ROLE_ARN;
+
+/**
+ * Credentials for the current environment.
+ *
+ * On Vercel: exchange the request-scoped OIDC token for a role session.
+ * Locally: return undefined so the SDK falls back to the shared profile.
+ */
+export function resolveCredentials() {
+  // VERCEL_OIDC_TOKEN is injected per invocation. Keying off it (rather than
+  // AWS_ROLE_ARN alone) means `vercel env pull` for local dev does not send us
+  // down the OIDC path with no token to exchange.
+  if (!AWS_ROLE_ARN || !process.env.VERCEL_OIDC_TOKEN) return undefined;
+  return awsCredentialsProvider({ roleArn: AWS_ROLE_ARN });
+}
+
 export function getDocClient(): DynamoDBDocumentClient {
   if (cached) return cached;
 
   const client = new DynamoDBClient({
     region: AWS_REGION,
+    credentials: resolveCredentials(),
     // Bounded so a slow AWS call fails fast rather than hanging a render until
     // the Vercel function timeout. These are per-request, not per-page.
     maxAttempts: 3,

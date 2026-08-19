@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { rankInternships } from '@/lib/ranker';
-import { readActiveListings } from '@/lib/listingsSource';
+import { queryRecent } from '@/lib/listingsRepo';
 import { MetricsCollector, checkAlerts } from '@/lib/metrics';
 import { getOpsHealth } from '@/lib/opsHealth';
 import sourcesData from '@/lib/sources.json';
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   try {
     // throwOnEmpty:false — an empty store is a fact worth reporting here, not a
     // failure. This endpoint exists precisely to surface that state.
-    const all = await readActiveListings({ throwOnEmpty: false });
+    const all = await queryRecent({ throwOnEmpty: false });
     collector.recordFetch(all.length);
 
     const ranked = rankInternships(all);

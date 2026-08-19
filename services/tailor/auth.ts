@@ -148,7 +148,10 @@ export async function verifyFirebaseToken(
     throw new AuthError(`No signing key for kid ${header.kid}`);
   }
 
-  const publicKey = createPublicKey({ key: jwk as unknown as object, format: 'jwk' });
+  const publicKey = createPublicKey({
+    key: jwk as unknown as import('node:crypto').JsonWebKey,
+    format: 'jwk',
+  });
   const verifier = createVerify('RSA-SHA256');
   verifier.update(`${headerB64}.${payloadB64}`);
   if (!verifier.verify(publicKey, b64urlToBuffer(signatureB64))) {

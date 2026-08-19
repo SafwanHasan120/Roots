@@ -33,6 +33,8 @@ interface FunctionUrlEvent {
 interface EnqueueBody {
   internshipId?: string;
   latex?: string;
+  /** Pasted by the user after automatic extraction failed. */
+  manualJd?: string;
 }
 
 function json(statusCode: number, body: unknown) {
@@ -45,6 +47,8 @@ function json(statusCode: number, body: unknown) {
 
 /** Cap request size so one caller cannot push a multi-megabyte prompt. */
 const MAX_LATEX_BYTES = 200_000;
+/** A pasted job description; generous, but bounded for the same reason. */
+const MAX_JD_BYTES = 100_000;
 
 export async function handler(event: FunctionUrlEvent) {
   const method = event.requestContext?.http?.method ?? 'POST';
@@ -98,6 +102,14 @@ export async function handler(event: FunctionUrlEvent) {
     });
   }
 
+  const manualJd = body.manualJd?.trim() || undefined;
+  if (manualJd && Buffer.byteLength(manualJd, 'utf8') > MAX_JD_BYTES) {
+    return json(413, {
+      error: 'payload_too_large',
+      message: 'Job description exceeds the maximum supported size',
+    });
+  }
+
   // --- claim quota --------------------------------------------------------
   //
   // Reserved before the job exists so a burst of concurrent requests cannot all
@@ -129,7 +141,7 @@ export async function handler(event: FunctionUrlEvent) {
     await sqs.send(
       new SendMessageCommand({
         QueueUrl: requireEnv('TAILOR_QUEUE_URL'),
-        MessageBody: JSON.stringify({ jobId, uid, internshipId, latex }),
+        MessageBody: JSON.stringify({ jobId, uid, internshipId, latex, manualJd }),
       }),
     );
   } catch (err) {

@@ -8,6 +8,8 @@ import { useAuth } from '@/context/AuthContext';
 import { useTailor } from '@/context/TailorContext';
 import { useResume } from '@/context/ResumeContext';
 import { formatDateToMonthDay } from '@/lib/scraper';
+import { tailorResume, TailorError, NeedsJobDescriptionError } from '@/lib/tailorClient';
+import JobDescriptionModal from '@/components/JobDescriptionModal';
 import type { Internship } from '@/lib/types';
 
 interface Props {
@@ -167,6 +169,12 @@ export default function InternshipTable({ internships, showFavorites = true, onl
   const [sortDir, setSortDir] = useState<SortDirection>(null);
   const [tailoring, setTailoring] = useState<Map<string, boolean>>(new Map());
   const [tailorErrors, setTailorErrors] = useState<Map<string, string>>(new Map());
+  // Set when the worker reports it could not read the description from the
+  // listing page; drives the paste modal.
+  const [jdPrompt, setJdPrompt] = useState<{
+    internship: Internship;
+    message: string;
+  } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const { isFavorite, toggleFavorite } = useFavorites();
   const { user } = useAuth();
@@ -264,11 +272,16 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     setActiveRoles(new Set());
   };
 
-  const handleTailor = async (internship: Internship) => {
+  /**
+   * Run a tailor job.
+   *
+   * `manualJd` is supplied only on the second attempt, after the worker reported
+   * it could not read the description from the listing page.
+   */
+  const runTailor = async (internship: Internship, manualJd?: string) => {
     if (!user) return;
 
     const internshipId = internship.id;
-    console.log('[Tailor] Starting for internship:', internshipId);
 
     setTailoring((prev) => new Map(prev).set(internshipId, true));
     setTailorErrors((prev) => {
@@ -278,67 +291,39 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     });
 
     try {
-      console.log('[Tailor] Sending request to /api/tailor');
-      const response = await fetch('/api/tailor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          internshipId,
-          latex: resumeSettings.latex,
-          uid: user.uid,
-        }),
+      // Enqueues a job and polls until it settles. The request no longer waits
+      // on two Claude calls, so it cannot hit the platform request timeout.
+      const result = await tailorResume(
+        user,
+        internshipId,
+        resumeSettings.latex,
+        undefined,
+        manualJd,
+      );
+
+      setResult({
+        internshipId,
+        latex: result.latex,
+        originalLatex: resumeSettings.latex,
+        coverageBefore: result.coverageBefore,
+        coverageAfter: result.coverageAfter,
+        degraded: result.degraded,
+        tailoredAt: Date.now(),
       });
-
-      const data = (await response.json()) as {
-        error?: string;
-        message?: string;
-        latex?: string;
-        coverageBefore?: number;
-        coverageAfter?: number;
-        degraded?: boolean;
-      };
-
-      console.log('[Tailor] Response status:', response.status);
-      console.log('[Tailor] Response data:', data);
-
-      if (!response.ok) {
-        const errorCode = data.error || 'unknown';
-        let errorMessage = 'Something went wrong. Please try again.';
-
-        if (errorCode === 'jd_scrape_failed') {
-          errorMessage = "Couldn't read that job page. Try a different link.";
-        } else if (errorCode === 'rate_limited') {
-          errorMessage = 'Daily limit reached (5/5). Resets at midnight UTC.';
-        }
-
-        console.log('[Tailor] Error:', errorMessage);
-        setTailorErrors((prev) => new Map(prev).set(internshipId, errorMessage));
+    } catch (error) {
+      // Not a failure: the page hid its description, so ask for a paste. No
+      // quota was spent, so the retry is free.
+      if (error instanceof NeedsJobDescriptionError) {
+        setJdPrompt({ internship, message: error.message });
         return;
       }
 
-      if (data.latex) {
-        console.log('[Tailor] Setting result with LaTeX length:', data.latex.length);
-        setResult({
-          internshipId,
-          latex: data.latex,
-          originalLatex: resumeSettings.latex,
-          coverageBefore: data.coverageBefore,
-          coverageAfter: data.coverageAfter,
-          degraded: data.degraded,
-          tailoredAt: Date.now(),
-        });
-        console.log('[Tailor] Result set successfully');
-      } else {
-        console.log('[Tailor] No LaTeX in response data');
-        setTailorErrors((prev) =>
-          new Map(prev).set(internshipId, 'No LaTeX returned from API')
-        );
-      }
-    } catch (error) {
-      console.error('[Tailor] Unexpected error:', error);
-      setTailorErrors((prev) =>
-        new Map(prev).set(internshipId, 'Something went wrong. Please try again.')
-      );
+      const message =
+        error instanceof TailorError
+          ? error.message
+          : 'Something went wrong. Please try again.';
+      console.error('[Tailor] Failed:', error);
+      setTailorErrors((prev) => new Map(prev).set(internshipId, message));
     } finally {
       setTailoring((prev) => {
         const next = new Map(prev);
@@ -348,8 +333,26 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     }
   };
 
+  /** First attempt: let the worker try to read the description itself. */
+  const handleTailor = (internship: Internship) => runTailor(internship);
+
+  /** Second attempt, with the description the user pasted. */
+  const handleJdSubmit = (jobDescription: string) => {
+    const target = jdPrompt?.internship;
+    setJdPrompt(null);
+    if (target) void runTailor(target, jobDescription);
+  };
+
   return (
     <div className="spa-fade-up" style={{ animationDelay: '120ms' }}>
+      <JobDescriptionModal
+        open={jdPrompt !== null}
+        company={jdPrompt?.internship.company ?? ''}
+        role={jdPrompt?.internship.role ?? ''}
+        message={jdPrompt?.message}
+        onSubmit={handleJdSubmit}
+        onCancel={() => setJdPrompt(null)}
+      />
       {/* ── Control panel ─────────────────────────────────────────── */}
       <div className="rounded-3xl border border-gray-200/80 bg-white p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04),0_12px_40px_-12px_rgba(0,0,0,0.08)] sm:p-7">
         {/* Search */}

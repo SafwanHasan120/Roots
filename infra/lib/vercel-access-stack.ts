@@ -35,6 +35,9 @@ export interface VercelAccessStackProps extends StackProps {
  * must match what Vercel shows there.
  */
 export class VercelAccessStack extends Stack {
+  /** Exposed so other stacks can grant this role narrow, specific permissions. */
+  public readonly role: Role;
+
   constructor(scope: Construct, id: string, props: VercelAccessStackProps) {
     super(scope, id, props);
 
@@ -77,6 +80,8 @@ export class VercelAccessStack extends Stack {
         resources: [table.tableArn, `${table.tableArn}/index/*`],
       }),
     );
+
+    this.role = role;
 
     new CfnOutput(this, 'VercelRoleArn', {
       value: role.roleArn,

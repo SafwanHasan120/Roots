@@ -3,6 +3,7 @@ import type { NextRequest } from 'next/server';
 import { rankInternships } from '@/lib/ranker';
 import { readActiveListings } from '@/lib/listingsSource';
 import { MetricsCollector, checkAlerts } from '@/lib/metrics';
+import { getOpsHealth } from '@/lib/opsHealth';
 import sourcesData from '@/lib/sources.json';
 
 export const revalidate = 3600;
@@ -79,12 +80,30 @@ export async function GET(request: NextRequest) {
 
     const metrics = collector.build();
     const alerts = checkAlerts(metrics);
+
+    // Operational health alongside the scrape metrics: dead letters, how long
+    // since the last scrape, and whether that is stale. CloudWatch alarms watch
+    // the same signals, but this is the version a human can curl.
+    const ops = await getOpsHealth();
+
+    if (ops.scrape.stale) {
+      alerts.push(
+        `Scrape is stale: last run ${ops.scrape.hoursSinceLastRun}h ago (expected daily)`,
+      );
+    }
+    if (ops.deadLetters.scrape) {
+      alerts.push(`${ops.deadLetters.scrape} message(s) in the scrape DLQ`);
+    }
+    if (ops.deadLetters.tailor) {
+      alerts.push(`${ops.deadLetters.tailor} job(s) in the tailor DLQ`);
+    }
+
     if (alerts.length > 0) {
-      console.warn('Scraper alerts:', alerts);
+      console.warn('Alerts:', alerts);
     }
 
     return NextResponse.json(
-      { metrics, alerts, success: true },
+      { metrics, ops, alerts, success: true },
       {
         headers: {
           'Cache-Control': 'private, s-maxage=3600, stale-while-revalidate=86400',

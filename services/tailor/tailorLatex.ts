@@ -27,12 +27,59 @@ export interface JdAnalysis {
   keywords: string[];
 }
 
+/**
+ * Resolve the Anthropic API key.
+ *
+ * Prefers ANTHROPIC_API_KEY when set (local runs, tests), otherwise reads the
+ * SSM SecureString named by ANTHROPIC_KEY_PARAM.
+ *
+ * The fetch happens here rather than being injected at deploy time because
+ * CloudFormation rejects SSM secure references in Lambda environment variables —
+ * env vars are readable from the function config, so they are not a secret
+ * store. Cached at module scope, so a warm container pays for this once.
+ */
+let cachedKey: string | null = null;
+
+export async function getAnthropicKey(): Promise<string> {
+  if (cachedKey) return cachedKey;
+
+  const direct = process.env.ANTHROPIC_API_KEY;
+  if (direct) {
+    cachedKey = direct;
+    return cachedKey;
+  }
+
+  const parameterName = process.env.ANTHROPIC_KEY_PARAM;
+  if (!parameterName) {
+    throw new Error('Neither ANTHROPIC_API_KEY nor ANTHROPIC_KEY_PARAM is set');
+  }
+
+  const { SSMClient, GetParameterCommand } = await import('@aws-sdk/client-ssm');
+  const ssm = new SSMClient({ maxAttempts: 3 });
+  const res = await ssm.send(
+    new GetParameterCommand({ Name: parameterName, WithDecryption: true }),
+  );
+
+  const value = res.Parameter?.Value;
+  if (!value) throw new Error(`SSM parameter ${parameterName} is empty`);
+
+  cachedKey = value;
+  return cachedKey;
+}
+
+/** Test seam. */
+export function clearKeyCache(): void {
+  cachedKey = null;
+}
+
 async function callClaude(systemPrompt: string, userMessage: string): Promise<string> {
+  const apiKey = await getAnthropicKey();
+
   const response = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+      'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({

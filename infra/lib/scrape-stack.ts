@@ -29,6 +29,11 @@ export interface ScrapeStackProps extends StackProps {
  * drained. Kept in its own stack so `cdk destroy` here cannot touch the table.
  */
 export class ScrapeStack extends Stack {
+  /** Exposed so the ops stack can alarm on them. */
+  public readonly dlq: Queue;
+  public readonly dispatcher: NodejsFunction;
+  public readonly worker: NodejsFunction;
+
   constructor(scope: Construct, id: string, props: ScrapeStackProps) {
     super(scope, id, props);
     const { table } = props;
@@ -191,6 +196,10 @@ export class ScrapeStack extends Stack {
     });
 
     // --- outputs ------------------------------------------------------------
+
+    this.dlq = dlq;
+    this.dispatcher = dispatcher;
+    this.worker = worker;
 
     new CfnOutput(this, 'QueueUrl', { value: queue.queueUrl });
     new CfnOutput(this, 'DlqUrl', { value: dlq.queueUrl });

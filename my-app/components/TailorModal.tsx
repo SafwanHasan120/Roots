@@ -127,6 +127,12 @@ export default function TailorModal() {
             </h2>
             <p className="mt-1 text-sm text-gray-500">
               Tailored {timeAgo(result.tailoredAt)}
+              {' · '}
+              {/* The stored artifact is deleted after 30 days by an S3 lifecycle
+                  rule, so say so rather than letting a download silently 404. */}
+              <span title="Tailored resumes are deleted from storage 30 days after they are created.">
+                expires 30 days after tailoring
+              </span>
             </p>
 
             {/* Coverage Metrics */}

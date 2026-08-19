@@ -80,14 +80,25 @@ export async function reserve(uid: string, now: number = Date.now()): Promise<vo
       new UpdateCommand({
         TableName: TABLE,
         Key: rateLimitKey(uid, dayKey(now)),
+        // `claimed` is maintained as consumed + reserved so the condition can be
+        // a plain comparison against a single attribute.
+        //
+        // ConditionExpressions are far more restricted than UpdateExpressions,
+        // in two ways that both bit here:
+        //   1. No arithmetic. `a + b < :limit` is a syntax error
+        //      ("Syntax error; token: \"+\"").
+        //   2. No if_not_exists. "The function is not allowed in a condition
+        //      expression".
+        // Hence a precomputed attribute plus an explicit absence test for the
+        // first write of the day.
         UpdateExpression:
-          'SET #reserved = if_not_exists(#reserved, :zero) + :one, ' +
+          'SET #claimed = if_not_exists(#claimed, :zero) + :one, ' +
+          '#reserved = if_not_exists(#reserved, :zero) + :one, ' +
           '#consumed = if_not_exists(#consumed, :zero), ' +
           '#ttl = :ttl, updatedAt = :now',
-        ConditionExpression:
-          'attribute_not_exists(PK) OR ' +
-          'if_not_exists(#consumed, :zero) + if_not_exists(#reserved, :zero) < :limit',
+        ConditionExpression: 'attribute_not_exists(#claimed) OR #claimed < :limit',
         ExpressionAttributeNames: {
+          '#claimed': 'claimed',
           '#reserved': 'reserved',
           '#consumed': 'consumed',
           '#ttl': 'ttl',
@@ -152,9 +163,13 @@ export async function release(uid: string, now: number = Date.now()): Promise<vo
       new UpdateCommand({
         TableName: TABLE,
         Key: rateLimitKey(uid, dayKey(now)),
-        UpdateExpression: 'SET #reserved = #reserved - :one, updatedAt = :now',
+        // `claimed` drops too: the slot is being handed back, so it must stop
+        // counting against the limit. (consume() deliberately leaves `claimed`
+        // alone — that slot really was spent.)
+        UpdateExpression:
+          'SET #reserved = #reserved - :one, #claimed = #claimed - :one, updatedAt = :now',
         ConditionExpression: 'attribute_exists(PK) AND #reserved > :zero',
-        ExpressionAttributeNames: { '#reserved': 'reserved' },
+        ExpressionAttributeNames: { '#reserved': 'reserved', '#claimed': 'claimed' },
         ExpressionAttributeValues: { ':one': 1, ':zero': 0, ':now': now },
       }),
     );

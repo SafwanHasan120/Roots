@@ -10,7 +10,13 @@ import { PutCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { doc, TABLE } from '../scrape/ddb.js';
 import { jobKey } from '@infra/keys';
 
-export type JobStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'FAILED';
+/**
+ * NEEDS_JD is a settled state, not an error: automatic extraction found no
+ * usable description (common on client-rendered boards like Workday), so the
+ * user is asked to paste it. The quota reservation is released, and the client
+ * resubmits with `manualJd`.
+ */
+export type JobStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'FAILED' | 'NEEDS_JD';
 
 export interface JobRecord {
   jobId: string;
@@ -111,6 +117,37 @@ export async function markDone(
         ':before': result.coverageBefore ?? null,
         ':after': result.coverageAfter ?? null,
         ':degraded': result.degraded ?? false,
+        ':now': now,
+      },
+    }),
+  );
+}
+
+/**
+ * Settle a job as needing a pasted job description.
+ *
+ * Separate from markFailed so failure-rate alarms are not polluted by an
+ * outcome that is expected on client-rendered job boards, and so the client can
+ * show an input box rather than a retry button.
+ */
+export async function markNeedsJd(
+  jobId: string,
+  errorCode: string,
+  clientMessage: string,
+  now: number = Date.now(),
+): Promise<void> {
+  await doc.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: jobKey(jobId),
+      UpdateExpression:
+        'SET #status = :needs, #error = :msg, errorCode = :code, updatedAt = :now',
+      ConditionExpression: 'attribute_exists(PK)',
+      ExpressionAttributeNames: { '#status': 'status', '#error': 'error' },
+      ExpressionAttributeValues: {
+        ':needs': 'NEEDS_JD',
+        ':msg': clientMessage,
+        ':code': errorCode,
         ':now': now,
       },
     }),

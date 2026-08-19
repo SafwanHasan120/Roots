@@ -21,6 +21,8 @@ import { Template } from 'aws-cdk-lib/assertions';
 import { DataStack } from '../data-stack.js';
 import { ScrapeStack } from '../scrape-stack.js';
 import { VercelAccessStack } from '../vercel-access-stack.js';
+import { TailorStack } from '../tailor-stack.js';
+import { OpsStack } from '../ops-stack.js';
 
 /**
  * Resource types that must never appear.
@@ -65,6 +67,28 @@ function synthesizeAll(): Array<{ name: string; template: Template }> {
       vercelProjectName: 'intern-tool',
     }),
   ];
+
+  const scrape = stacks[1] as ScrapeStack;
+  const tailor = new TailorStack(app, 'ConstraintsTailor', {
+    env,
+    table: data.table,
+    anthropicKeyParameterName: '/intern-tool/anthropic-api-key',
+    firebaseProjectId: 'intern-tool-4224a',
+  });
+  stacks.push(tailor);
+  stacks.push(
+    new OpsStack(app, 'ConstraintsOps', {
+      env,
+      table: data.table,
+      scrapeDlq: scrape.dlq,
+      tailorDlq: tailor.dlq,
+      dispatcher: scrape.dispatcher,
+      scrapeWorker: scrape.worker,
+      tailorEnqueue: tailor.enqueueFn,
+      tailorWorker: tailor.workerFn,
+      alertEmail: 'alerts@example.com',
+    }),
+  );
 
   return stacks.map((s) => ({ name: s.stackName, template: Template.fromStack(s) }));
 }

@@ -161,4 +161,100 @@ describe('worker', () => {
       expect(upsertListing.mock.calls[0][0].linkHealth).toBeUndefined();
     });
   });
+
+  describe('capacity', () => {
+    /** N listings, newest first by construction so ordering bugs are visible. */
+    const many = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        listing({
+          id: `https://example.com/job/${i}`,
+          appUrl: `https://example.com/job/${i}`,
+          dateMs: Date.UTC(2026, 7, 1) - i * 86_400_000,
+        }),
+      );
+
+    it('upserts in parallel but never exceeds the concurrency cap', async () => {
+      let inFlight = 0;
+      let peak = 0;
+      upsertListing.mockImplementation(async () => {
+        peak = Math.max(peak, ++inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        return { written: true, id: 'x' };
+      });
+      scrapeOneSource.mockResolvedValue({
+        listings: many(50),
+        state: { failCount: 0 },
+        skipped: false,
+        unchanged: false,
+      });
+
+      await handler(event(MSG));
+
+      expect(upsertListing).toHaveBeenCalledTimes(50);
+      // Parallel enough to matter...
+      expect(peak).toBeGreaterThan(1);
+      // ...but bounded, so a large source cannot stampede an on-demand table.
+      expect(peak).toBeLessThanOrEqual(10);
+    });
+
+    it('fails the message when any upsert in a batch rejects', async () => {
+      // A partial write must not report success: the sweep would later see the
+      // unwritten listings as absent from source and deactivate them.
+      upsertListing
+        .mockResolvedValueOnce({ written: true, id: 'a' })
+        .mockRejectedValueOnce(new Error('ProvisionedThroughputExceeded'))
+        .mockResolvedValue({ written: true, id: 'c' });
+      scrapeOneSource.mockResolvedValue({
+        listings: many(5),
+        state: { failCount: 0 },
+        skipped: false,
+        unchanged: false,
+      });
+
+      await expect(handler(event(MSG))).rejects.toThrow(/ProvisionedThroughputExceeded/);
+    });
+
+    it('probes the freshest listings, not an arbitrary prefix', async () => {
+      // Feed order is arbitrary; oldest is deliberately placed first here.
+      const oldest = listing({
+        appUrl: 'https://example.com/old',
+        dateMs: Date.UTC(2020, 0, 1),
+      });
+      const newest = listing({
+        appUrl: 'https://example.com/new',
+        dateMs: Date.UTC(2026, 7, 19),
+      });
+      process.env.LINK_PROBE_LIMIT = '1';
+      vi.resetModules();
+      const { handler: fresh } = await import('../worker.js');
+
+      scrapeOneSource.mockResolvedValue({
+        listings: [oldest, newest],
+        state: { failCount: 0 },
+        skipped: false,
+        unchanged: false,
+      });
+      validateUrls.mockResolvedValue([]);
+
+      await fresh(event(MSG));
+
+      expect(validateUrls).toHaveBeenCalledWith(['https://example.com/new']);
+      delete process.env.LINK_PROBE_LIMIT;
+      vi.resetModules();
+    });
+
+    it('drops unusable listings before batching rather than writing them', async () => {
+      scrapeOneSource.mockResolvedValue({
+        listings: [listing(), listing({ id: '', appUrl: '' })],
+        state: { failCount: 0 },
+        skipped: false,
+        unchanged: false,
+      });
+
+      await handler(event(MSG));
+
+      expect(upsertListing).toHaveBeenCalledTimes(1);
+    });
+  });
 });

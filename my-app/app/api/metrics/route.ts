@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { rankInternships } from '@/lib/ranker';
 import { queryRecent } from '@/lib/listingsRepo';
+import { repoSlug } from '@/lib/scraper';
 import { MetricsCollector, checkAlerts } from '@/lib/metrics';
 import { getOpsHealth } from '@/lib/opsHealth';
 import sourcesData from '@/lib/sources.json';
@@ -60,7 +61,12 @@ export async function GET(request: NextRequest) {
     try {
       const sources = sourcesData.sources || [];
       sources.forEach((source) => {
-        const sourceInternships = ranked.filter((i) => i.source.includes(source.id));
+        // Match on the repo slug, which is what the scraper actually stores in
+        // `source`. This used to be `i.source.includes(source.id)` — a substring
+        // test against the short id, which mis-attributes whenever one id is a
+        // substring of another source's slug.
+        const slug = repoSlug(source.url);
+        const sourceInternships = ranked.filter((i) => i.source === slug);
         const validCount = sourceInternships.filter((i) => i.appUrl).length;
         const parseSuccessRate =
           sourceInternships.length > 0 ? validCount / sourceInternships.length : 0;

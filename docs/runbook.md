@@ -76,7 +76,25 @@ deactivated for *absence*, and the log says so. That guard exists because this
 happened once: `lastSeenRun` was missing from the GSI1 projection, every row
 read as never-seen, and one sweep took down all 419 listings.
 
-If the abort fires, check that `lastSeenRun` is still projected:
+**Most likely cause now: one large source failed.** `SimplifyJobs` carries ~1,886
+of ~2,232 unique listings (~85%). If it alone fails for `SWEEP_GRACE_RUNS` (3)
+consecutive runs, its listings look absent and *by themselves* exceed the 50%
+limit, so the sweep aborts wholesale. That is correct behaviour — it fails loud
+instead of wiping the corpus — but note the side effect: genuinely expired
+listings from the other sources also stop being swept, so the corpus goes stale
+rather than wrong.
+
+Check per-source worker logs before anything else:
+
+```bash
+aws logs filter-log-events --profile roots --region us-west-2 \
+  --log-group-name /aws/lambda/<worker-fn> --since 3d \
+  --filter-pattern '{ $.slug = "SimplifyJobs/Summer2027-Internships" }'
+```
+
+**Do not weaken the 50% limit to make the abort go away.** Fix the source.
+
+If the source is healthy, check that `lastSeenRun` is still projected:
 
 ```bash
 aws dynamodb describe-table --table-name InternToolData-AppTable815C50BC-DR7EUEW9SOCY \

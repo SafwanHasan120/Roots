@@ -31,8 +31,30 @@ export interface WorkerSummary {
   skipped: boolean;
 }
 
-/** Cap on link-health probes per invocation. */
-const LINK_PROBE_LIMIT = Number(process.env.LINK_PROBE_LIMIT ?? 400);
+/**
+ * Cap on link-health probes per invocation.
+ *
+ * Deliberately low. Probes are HEAD requests through the shared rate limiter,
+ * which allows 5 concurrent per host with a 100ms floor, and each carries
+ * timeoutMs 5000 with 2 retries. A source whose links concentrate on a few ATS
+ * hosts therefore serializes, and one blackholing host costs ~15s per probe.
+ * Raise this only with a measured p99 duration in hand.
+ */
+const LINK_PROBE_LIMIT = Number(process.env.LINK_PROBE_LIMIT ?? 150);
+
+/**
+ * Parallel upserts per batch.
+ *
+ * Sequential writes do not survive a large source: at ~15ms per round trip,
+ * 1,875 listings is ~28s, and an *unchanged* listing costs two round trips
+ * (the conditional-check failure, then touchListing) — so a steady-state run is
+ * slower than a cold one. Same bounded-batch shape as sweep.ts, which is tuned
+ * for the same on-demand table.
+ *
+ * Env-tunable so setting it to 1 restores the old sequential behaviour without
+ * a code deploy.
+ */
+const UPSERT_CONCURRENCY = Math.max(1, Number(process.env.UPSERT_CONCURRENCY ?? 10));
 
 export async function handler(event: SQSEvent): Promise<void> {
   // batchSize is 1, so this loop runs once. Written as a loop anyway so raising
@@ -76,13 +98,29 @@ async function processRecord(record: SQSRecord): Promise<WorkerSummary> {
   let written = 0;
   let unchanged = 0;
 
-  // Sequential rather than parallel: the source list is small, and this keeps
-  // write throughput predictable against on-demand capacity.
-  for (const listing of listings) {
-    if (!listing.appUrl && !listing.id) continue;
-    const res = await upsertListing(listing, runId);
-    if (res.written) written++;
-    else unchanged++;
+  // A listing with neither key is unusable; drop before batching so the
+  // concurrency window is never padded with no-ops.
+  const writable = listings.filter((l) => l.appUrl || l.id);
+
+  // Bounded concurrency, same shape as sweep.ts. A single failed upsert must
+  // not abandon the rest of the batch, but it MUST still fail the message so
+  // SQS redelivers — otherwise a partial write would look like a success and
+  // the sweep would later treat the unwritten listings as absent.
+  for (let i = 0; i < writable.length; i += UPSERT_CONCURRENCY) {
+    const batch = writable.slice(i, i + UPSERT_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map((listing) => upsertListing(listing, runId)),
+    );
+
+    const failed = results.find((r) => r.status === 'rejected');
+    if (failed) {
+      throw (failed as PromiseRejectedResult).reason;
+    }
+
+    for (const res of results) {
+      if ((res as PromiseFulfilledResult<{ written: boolean }>).value.written) written++;
+      else unchanged++;
+    }
   }
 
   const summary: WorkerSummary = {
@@ -109,7 +147,15 @@ async function processRecord(record: SQSRecord): Promise<WorkerSummary> {
  * is still worth storing.
  */
 async function withLinkHealth(listings: Internship[]): Promise<Internship[]> {
-  const probeable = listings.filter((l) => l.appUrl).slice(0, LINK_PROBE_LIMIT);
+  // Probe the FRESHEST N, not the first N. The feed's own order is arbitrary,
+  // so slicing it directly pinned coverage to the same arbitrary subset every
+  // run while the rest kept linkHealth undefined forever. Sorting by dateMs
+  // spends the budget where it matters — users act on recent listings, and
+  // expirationDetector ages out the tail regardless. Needs no persisted state.
+  const probeable = listings
+    .filter((l) => l.appUrl)
+    .sort((a, b) => b.dateMs - a.dateMs)
+    .slice(0, LINK_PROBE_LIMIT);
   if (probeable.length === 0) return listings;
 
   try {

@@ -13,9 +13,11 @@ initRateLimiter({
   minDelayBetweenRequestsMs: 100,
 });
 
-// Legacy fallback if sources.json fails to load
+// Legacy fallback if sources.json fails to load.
+// Branch segments must match each repo's real default branch — vanshb03 is on
+// `dev` and has no `main`, so the old URL here would 404 on the SHA check.
 const FALLBACK_REPOS = [
-  'https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md',
+  'https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/README.md',
   'https://raw.githubusercontent.com/sndsh404/summer-2027-internships/main/README.md',
 ];
 
@@ -33,9 +35,40 @@ export function loadSources() {
 
 // Derive a short repo slug ("owner/repo") from a raw GitHub URL for the `source` field.
 // Exported so the worker can key per-source scrape state identically.
+//
+// Deliberately does NOT include the branch: this slug keys per-source scrape
+// state in DynamoDB, so changing its output would orphan every existing state
+// row and silently reset etag/sha/circuit-breaker. Use repoRef() for the branch.
 export function repoSlug(url: string): string {
   const m = url.match(/githubusercontent\.com\/([^/]+)\/([^/]+)\//);
   return m ? `${m[1]}/${m[2]}` : url;
+}
+
+export interface RepoRef {
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
+/**
+ * Owner, repo AND branch from a raw.githubusercontent.com URL.
+ *
+ * The branch matters: the commit-SHA change detector below used to query
+ * `/commits?path=README.md` with no `sha=`, which returns the *default branch's*
+ * HEAD — while the content fetch pulls whatever branch the URL names. When those
+ * differ, the detector compares one branch's HEAD against another branch's
+ * content, concludes "unchanged", and returns zero listings. Three such runs and
+ * the sweep deactivates that source's entire corpus.
+ *
+ * Not hypothetical: vanshb03's default branch is `dev` while sources.json
+ * pointed at `/main/`, and `?sha=main` 404s there.
+ *
+ * Returns null for non-GitHub URLs so callers fall through to an unconditional
+ * fetch rather than guessing.
+ */
+export function repoRef(url: string): RepoRef | null {
+  const m = url.match(/githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\//);
+  return m ? { owner: m[1], repo: m[2], branch: m[3] } : null;
 }
 
 // Remove supplementary unicode planes (emoji, flags) + variation selectors / ZWJ.
@@ -274,39 +307,37 @@ async function scrapeRepo(url: string, scrapeState?: any, useNoStore: boolean = 
   let sha: string | undefined;
 
   // For GitHub sources, check commit SHA first
-  if (url.includes('raw.githubusercontent.com')) {
-    const match = url.match(/github\.com\/([^/]+)\/([^/]+)|githubusercontent\.com\/([^/]+)\/([^/]+)/);
-    if (match) {
-      const owner = match[1] || match[3];
-      const repo = match[2] || match[4];
-      try {
-        const commitRes = await rateLimitedFetch(
-          `https://api.github.com/repos/${owner}/${repo}/commits?path=README.md&per_page=1`,
-          () =>
-            fetchWithRetry(
-              `https://api.github.com/repos/${owner}/${repo}/commits?path=README.md&per_page=1`,
-              {
-                headers: process.env.GITHUB_TOKEN
-                  ? { Authorization: `token ${process.env.GITHUB_TOKEN}` }
-                  : {},
-                maxRetries: 2,
-                timeoutMs: 5000,
-              }
-            )
-        );
-        if (commitRes.ok) {
-          const commits = await commitRes.json();
-          if (commits[0]) {
-            const headSha = commits[0].sha;
-            if (state.sha === headSha) {
-              return { listings: [], sha: headSha, etag };
-            }
-            sha = headSha;
+  const ref = repoRef(url);
+  if (ref) {
+    const { owner, repo, branch } = ref;
+    // `sha=${branch}` is load-bearing: without it GitHub answers with the
+    // default branch's HEAD, which may not be the branch we fetch content
+    // from. See repoRef().
+    const commitsUrl =
+      `https://api.github.com/repos/${owner}/${repo}/commits` +
+      `?path=README.md&per_page=1&sha=${encodeURIComponent(branch)}`;
+    try {
+      const commitRes = await rateLimitedFetch(commitsUrl, () =>
+        fetchWithRetry(commitsUrl, {
+          headers: process.env.GITHUB_TOKEN
+            ? { Authorization: `token ${process.env.GITHUB_TOKEN}` }
+            : {},
+          maxRetries: 2,
+          timeoutMs: 5000,
+        })
+      );
+      if (commitRes.ok) {
+        const commits = await commitRes.json();
+        if (commits[0]) {
+          const headSha = commits[0].sha;
+          if (state.sha === headSha) {
+            return { listings: [], sha: headSha, etag };
           }
+          sha = headSha;
         }
-      } catch (e) {
-        // API check failed; fall through to unconditional fetch
       }
+    } catch (e) {
+      // API check failed; fall through to unconditional fetch
     }
   }
 
@@ -330,19 +361,19 @@ async function scrapeRepo(url: string, scrapeState?: any, useNoStore: boolean = 
 
   // Try .github/scripts/listings.json first
   let listings: Internship[] = [];
-  if (url.includes('raw.githubusercontent.com')) {
-    const match = url.match(/github\.com\/([^/]+)\/([^/]+)|githubusercontent\.com\/([^/]+)\/([^/]+)/);
-    if (match) {
-      const owner = match[1] || match[3];
-      const repo = match[2] || match[4];
+  if (ref) {
+    {
+      const { owner, repo, branch } = ref;
+      // Same branch as the content fetch. Hardcoding `main` here read one
+      // branch's structured feed while parsing another's markdown — and for
+      // repos that have no `main` at all (SimplifyJobs) it simply 404s,
+      // silently downgrading to the far more fragile markdown parser.
+      const structUrl =
+        `https://raw.githubusercontent.com/${owner}/${repo}/${branch}` +
+        `/.github/scripts/listings.json`;
       try {
-        const structRes = await rateLimitedFetch(
-          `https://raw.githubusercontent.com/${owner}/${repo}/main/.github/scripts/listings.json`,
-          () =>
-            fetchWithRetry(
-              `https://raw.githubusercontent.com/${owner}/${repo}/main/.github/scripts/listings.json`,
-              { maxRetries: 1, timeoutMs: 5000 }
-            )
+        const structRes = await rateLimitedFetch(structUrl, () =>
+          fetchWithRetry(structUrl, { maxRetries: 1, timeoutMs: 5000 })
         );
         if (structRes.ok) {
           const data = await structRes.json();

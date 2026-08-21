@@ -46,7 +46,6 @@ describe('listingHash', () => {
     ['dateMs', { dateMs: Date.UTC(2026, 7, 2) }],
     ['datePosted', { datePosted: 'Aug 02' }],
     ['prestigeScore', { prestigeScore: 1 }],
-    ['source', { source: 'other/repo' }],
     ['isExpired', { isExpired: true }],
     ['expirationReason', { expirationReason: 'over-6-months' as const }],
   ])('changes when %s changes', (_field, patch) => {
@@ -57,6 +56,14 @@ describe('listingHash', () => {
     expect(listingHash({ ...base, companyUrl: 'https://acme.com' })).not.toBe(
       listingHash(base),
     );
+  });
+
+  it('does not change when source changes', () => {
+    // Listings dedup by appUrl hash, so one carried by several sources is a
+    // single item whose `source` is whichever worker wrote last. Including it
+    // here made those rows flip on every alternate run and rewrite forever —
+    // 91 of 2,232 unique listings across the enabled sources.
+    expect(listingHash({ ...base, source: 'other/repo' })).toBe(listingHash(base));
   });
 
   it('does not change when linkHealth changes', () => {

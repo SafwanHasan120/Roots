@@ -8,6 +8,8 @@ import {
   isSeparatorRow,
   detectColumns,
   normalizeAppUrl,
+  repoSlug,
+  repoRef,
 } from '../scraper';
 
 describe('scraper.ts', () => {
@@ -335,6 +337,55 @@ describe('scraper.ts', () => {
       expect(result).not.toContain('gh_src');
       expect(result).not.toContain('ref');
       expect(result).not.toContain('source');
+    });
+  });
+
+  describe('repoSlug', () => {
+    // These pin the CURRENT output. repoSlug keys per-source scrape state in
+    // DynamoDB, so a change here orphans every existing state row and silently
+    // resets etag/sha/circuit-breaker. Adding repoRef must not disturb it.
+    it('returns owner/repo, excluding the branch', () => {
+      expect(
+        repoSlug('https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/README.md'),
+      ).toBe('vanshb03/Summer2027-Internships');
+    });
+
+    it('is identical across branches, so state survives a branch change', () => {
+      const base = 'https://raw.githubusercontent.com/o/r';
+      expect(repoSlug(`${base}/main/README.md`)).toBe(repoSlug(`${base}/dev/README.md`));
+    });
+
+    it('returns the URL unchanged for a non-GitHub source', () => {
+      expect(repoSlug('https://example.com/jobs.json')).toBe('https://example.com/jobs.json');
+    });
+  });
+
+  describe('repoRef', () => {
+    it('extracts the branch, not just owner/repo', () => {
+      expect(
+        repoRef('https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/README.md'),
+      ).toEqual({ owner: 'vanshb03', repo: 'Summer2027-Internships', branch: 'dev' });
+    });
+
+    it('distinguishes main from dev', () => {
+      const base = 'https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships';
+      expect(repoRef(`${base}/main/README.md`)?.branch).toBe('main');
+      expect(repoRef(`${base}/dev/README.md`)?.branch).toBe('dev');
+    });
+
+    it('handles a nested content path', () => {
+      expect(repoRef('https://raw.githubusercontent.com/o/r/dev/.github/scripts/listings.json'))
+        .toEqual({ owner: 'o', repo: 'r', branch: 'dev' });
+    });
+
+    it('returns null for a non-GitHub URL so callers fall through', () => {
+      // Must be null, not a guess: a wrong branch would make the change
+      // detector compare against content it never fetched.
+      expect(repoRef('https://example.com/jobs.json')).toBeNull();
+    });
+
+    it('returns null when no branch segment is present', () => {
+      expect(repoRef('https://raw.githubusercontent.com/owner/repo')).toBeNull();
     });
   });
 });

@@ -3,7 +3,13 @@
     {
       "id": "vanshb03",
       "name": "vanshb03/Summer2027-Internships",
-      "url": "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/main/README.md",
+      "url": "https://raw.githubusercontent.com/vanshb03/Summer2027-Internships/dev/README.md",
+      "enabled": true
+    },
+    {
+      "id": "SimplifyJobs",
+      "name": "SimplifyJobs/Summer2027-Internships",
+      "url": "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/README.md",
       "enabled": true
     },
     {

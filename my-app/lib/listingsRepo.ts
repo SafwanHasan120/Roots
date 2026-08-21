@@ -138,6 +138,21 @@ async function queryShard(shardKey: string, limit: number): Promise<Record<strin
   return rows;
 }
 
+/**
+ * Default ceiling on listings returned.
+ *
+ * Was 1000, which was an unreachable ceiling at ~400 active listings and became
+ * a load-bearing truncation once the corpus passed it. That matters even though
+ * ranker.ts caps its own output at 1000: the ranker can only choose from what it
+ * is handed, so truncating here first would hide genuinely better listings
+ * behind an arbitrary shard-merge prefix rather than letting recency and
+ * prestige decide.
+ *
+ * Raise this alongside the corpus. It is not free — every shard is queried for
+ * this many rows.
+ */
+const DEFAULT_LIMIT = 5000;
+
 export interface QueryRecentOptions {
   /** Maximum listings to return. Each shard is queried for this many. */
   limit?: number;
@@ -161,7 +176,7 @@ export interface QueryRecentOptions {
  * silently hide listings, which is worse than an error the caller can handle.
  */
 export async function queryRecent(options: QueryRecentOptions = {}): Promise<Internship[]> {
-  const { limit = 1000, throwOnEmpty = true } = options;
+  const { limit = DEFAULT_LIMIT, throwOnEmpty = true } = options;
 
   if (!TABLE_NAME) {
     throw new CredentialError('DDB_TABLE_NAME is not set');

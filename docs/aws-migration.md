@@ -139,8 +139,9 @@ escape a hot partition. A single DynamoDB partition sustains 3000 RCU / 1000
 WCU, far beyond this workload.
 
 **Revisit above roughly 50,000 active listings**, or if a single shard's query
-exceeds the 1 MB response limit before filling a page. The corpus is currently
-in the hundreds.
+exceeds the 1 MB response limit before filling a page. The corpus is ~2,232
+unique listings (measured 2026-08-20), distributed 529 / 597 / 591 / 515 across
+the four shards — even enough that no shard is near the limit.
 
 Raising the count is a **migration, not a config change**: it rewrites `GSI1PK`
 on every existing item and needs a one-off backfill script. Changing the
@@ -163,6 +164,52 @@ so a read needs no base-table fetch. Projected attributes are billed as a second
 copy of the data, so the lists are deliberately narrow — notably the upsert
 `hash` is excluded.
 
+## Sources
+
+Three curated GitHub repos, configured in `my-app/lib/sources.json`. **esbuild
+inlines that file into the Lambda bundle, so a config change needs a redeploy —
+it is not runtime configuration.**
+
+| id | slug | branch | active listings |
+|---|---|---|---|
+| `vanshb03` | vanshb03/Summer2027-Internships | `dev` | ~315 |
+| `SimplifyJobs` | SimplifyJobs/Summer2027-Internships | `dev` | ~1,886 |
+| `sndsh404` | sndsh404/summer-2027-internships | `main` | ~124 |
+
+### The branch segment is load-bearing
+
+`scrapeRepo` runs a commit-SHA short-circuit against the GitHub API. That query
+**must** carry `sha=<branch>` (`repoRef()` supplies it). Without it GitHub
+answers with the *default branch's* HEAD while the content fetch pulls whatever
+branch the URL names — so the detector compares one branch's HEAD against
+another branch's content, concludes "unchanged", and returns zero listings.
+Three such runs and the sweep deactivates that source's whole corpus.
+
+This was live: `vanshb03`'s default branch is `dev` while `sources.json` pointed
+at `/main/`, and `?sha=main` 404s there. Both branches happened to be identical,
+which is the only reason it never fired.
+
+`repoSlug()` deliberately **excludes** the branch — it keys per-source scrape
+state in DynamoDB, so including it would orphan every state row and silently
+reset etag/sha/circuit-breaker. Use `repoRef()` when you need the branch,
+`repoSlug()` when you need identity.
+
+### Why not ATS APIs, HN, or aggregators
+
+Measured 2026-08-19, not assumed:
+
+- **Greenhouse**: Stripe 576 jobs → 2 genuine SWE interns, at 360 KB/board.
+  Airbnb 194 → 0. A 250-board registry is ~90 MB/run for a handful of roles.
+- **Ashby**: 2.26 MB for a single org.
+- **Lever**: most orgs 404; could not reliably enumerate live boards.
+- **HN "Who is hiring"**: 243 comments → 3 regex matches → **all 3 false
+  positives**. Yield zero, and false positives are worse than no source — they
+  enter the corpus, get ranked, and consume link probes.
+
+SimplifyJobs delivers ~1,886 listings in **one** request. Everything above is
+orders of magnitude worse per byte and per line of code. Adding a curated repo
+is a two-line config change; an ATS adapter is a subsystem.
+
 ## Listing lifecycle
 
 ### Idempotent upsert
@@ -172,6 +219,17 @@ Each listing item stores a `hash` of its content. The worker writes with
 unchanged listing produces a `ConditionalCheckFailedException` and no write.
 That exception is the expected outcome on a no-change run and is counted as
 success, not an error.
+
+**`source` and `linkHealth` are excluded from the hash.** Listings dedup by a
+hash of `appUrl`, so one carried by several sources is a single item whose
+`source` is whichever worker wrote last. Including `source` made those rows flip
+on every alternate run and rewrite forever — 91 of 2,232 unique listings.
+`linkHealth` is excluded for the same reason: a flaky HEAD probe would otherwise
+rewrite the item every run and defeat the conditional write.
+
+Consequence: a listing whose only change is which source carried it does not
+count as changed. Intended — nothing downstream depends on `source` except the
+metrics route's per-source counts, which match on the repo slug.
 
 ### Deactivation (the sweep)
 

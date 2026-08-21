@@ -45,7 +45,23 @@ describe('ScrapeStack', () => {
       // duplicate work and a DLQ entry for a job that actually succeeded.
       const queues = template.findResources('AWS::SQS::Queue');
       const work = Object.values(queues).find((q) => q.Properties?.RedrivePolicy);
-      expect(work?.Properties.VisibilityTimeout).toBe(720); // 120s worker * 6
+
+      // Assert the RELATIONSHIP, not a literal. Pinning the number meant every
+      // worker-timeout change broke this test for no reason, which invites
+      // updating the constant without rechecking the invariant.
+      //
+      // Select the worker by its event-source mapping rather than by taking the
+      // max Timeout across functions — CDK's own bundling custom resource is a
+      // Lambda too, and it has a longer timeout than anything we declare.
+      const mappings = template.findResources('AWS::Lambda::EventSourceMapping');
+      const workerRef = Object.values(mappings)[0]?.Properties?.FunctionName?.Ref;
+      const fns = template.findResources('AWS::Lambda::Function');
+      const workerTimeout = Number(fns[workerRef]?.Properties?.Timeout ?? 0);
+      expect(workerTimeout, 'could not locate the worker function').toBeGreaterThan(0);
+
+      expect(work?.Properties.VisibilityTimeout).toBe(workerTimeout * 6);
+      // SQS hard cap; exceeding it fails the deploy, not the test.
+      expect(work?.Properties.VisibilityTimeout).toBeLessThanOrEqual(43200);
     });
   });
 

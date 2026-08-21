@@ -121,8 +121,11 @@ export async function runSweep(
   if (rows.length >= 10 && absent.length > rows.length * ABSENT_RATIO_LIMIT) {
     throw new Error(
       `Sweep aborted: ${absent.length}/${rows.length} listings looked absent from source ` +
-        `(limit ${ABSENT_RATIO_LIMIT * 100}%). This usually means lastSeenRun is missing from ` +
-        `the GSI1 projection or the run history is corrupt — not that the corpus disappeared.`,
+        `(limit ${ABSENT_RATIO_LIMIT * 100}%). Likely causes, in order: a single large source ` +
+        `failed for ${SWEEP_GRACE_RUNS} consecutive runs (one source now dominates the corpus, ` +
+        `so its outage alone can exceed this limit); lastSeenRun is missing from the GSI1 ` +
+        `projection; or the run history is corrupt. It does not mean the corpus disappeared — ` +
+        `check per-source worker logs before overriding.`,
     );
   }
 

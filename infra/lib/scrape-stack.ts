@@ -44,7 +44,11 @@ export class ScrapeStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
 
-    const workerTimeout = Duration.seconds(120);
+    // 300s, up from 120s. A large source (SimplifyJobs carries ~1,875 active
+    // listings) needs headroom for batched upserts plus link probes. Lambda
+    // bills actual milliseconds, not the ceiling, so raising this costs nothing
+    // while the function finishes early.
+    const workerTimeout = Duration.seconds(300);
 
     const queue = new Queue(this, 'ScrapeQueue', {
       // Must exceed the worker timeout or SQS redelivers a message that is

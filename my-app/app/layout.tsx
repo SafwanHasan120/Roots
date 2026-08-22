@@ -23,7 +23,7 @@ const montserrat = Montserrat({
 });
 
 export const metadata: Metadata = {
-  title: "Sift - Summer 2027 Internships",
+  title: "Roots",
   description:
     "A curated, premium dashboard of Summer 2027 internships. Search, filter, and apply with calm and clarity.",
 };

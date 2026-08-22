@@ -120,6 +120,16 @@ const PILL_OFF = 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 h
 
 type SortDirection = 'asc' | 'desc' | null;
 
+/**
+ * Company runs rendered per page, and how many each "show more" adds.
+ *
+ * The corpus is ~2,300 listings and the table has no virtualization, so
+ * rendering everything builds thousands of DOM nodes on first paint. Groups
+ * (not rows) are the unit, so this is a floor on rows shown, not a ceiling —
+ * a page of 50 groups may contain considerably more than 50 listings.
+ */
+const GROUP_PAGE_SIZE = 50;
+
 // A run of consecutive rows sharing a company. Adjacency (not a global
 // company key) is deliberate: it folds repeats without reordering the list,
 // so the active sort still decides where each run sits.
@@ -257,12 +267,38 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     return copy;
   }, [filtered, sortDir]);
 
-  const groups = useMemo(() => groupByAdjacentCompany(sorted), [sorted]);
+  const allGroups = useMemo(() => groupByAdjacentCompany(sorted), [sorted]);
+
+  /**
+   * Render a window of the results rather than all of them.
+   *
+   * Paginate over GROUPS, not rows: a company run is one visual unit, and
+   * slicing rows would cut a collapsed run in half and strand its remainder at
+   * the top of the next page.
+   *
+   * Search, filter and sort still run over the FULL set above — only rendering
+   * is windowed. Filtering to a page would silently hide matches.
+   */
+  const [visibleGroups, setVisibleGroups] = useState(GROUP_PAGE_SIZE);
+  const groups = useMemo(
+    () => allGroups.slice(0, visibleGroups),
+    [allGroups, visibleGroups],
+  );
+  const remainingGroups = allGroups.length - groups.length;
+  // Listings shown, not groups — a run of 8 roles at one company is 1 group but
+  // 8 positions, and "showing 50 of 2,316" would be wrong by that factor.
+  const shownCount = useMemo(
+    () => groups.reduce((n, g) => n + g.items.length, 0),
+    [groups],
+  );
 
   // Collapse everything again when the result set changes: an id left over
   // from a previous filter would otherwise silently expand a new group.
+  // Reset the window too — otherwise a narrow filter inherits a large window
+  // and a broad one leaves the user scrolled past results that just changed.
   useEffect(() => {
     setExpanded(new Set());
+    setVisibleGroups(GROUP_PAGE_SIZE);
   }, [query, activeLocs, activeRoles, sortDir]);
 
   const hasFilters = query.trim() !== '' || activeLocs.size > 0 || activeRoles.size > 0;
@@ -871,6 +907,26 @@ export default function InternshipTable({ internships, showFavorites = true, onl
           </div>
         )}
       </div>
+
+      {/* Outside the desktop/mobile split so one control serves both views. */}
+      {remainingGroups > 0 && (
+        <div className="mt-6 flex flex-col items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setVisibleGroups((n) => n + GROUP_PAGE_SIZE)}
+            className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-6 py-3 text-sm font-medium text-gray-900 shadow-sm transition-all hover:border-gray-300 hover:bg-gray-50"
+          >
+            Show more
+            <span className="text-gray-400">
+              ({remainingGroups.toLocaleString()} more)
+            </span>
+          </button>
+          <p className="text-xs text-gray-400">
+            Showing {sorted.length === 0 ? 0 : shownCount.toLocaleString()} of{' '}
+            {sorted.length.toLocaleString()} positions
+          </p>
+        </div>
+      )}
 
     </div>
   );

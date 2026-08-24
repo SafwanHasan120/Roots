@@ -170,12 +170,22 @@ export class ScrapeStack extends Stack {
     });
     dispatcher.grantInvoke(schedulerRole);
 
-    // 13:00 UTC daily, matching the Vercel cron this replaces.
+    // Every 6 hours at 01:00/07:00/13:00/19:00 UTC. 13:00 is retained from the
+    // original daily schedule (09:00 ET, ahead of the US workday).
+    //
+    // Cadence and SWEEP_GRACE_RUNS are coupled: the sweep counts RUNS, not
+    // days, so quadrupling the frequency without widening that window would cut
+    // the tolerance for a vanished listing from ~3 days to ~18 hours.
+    //
+    // Cost at this cadence is ~$0.22/month (measured: ~$0.001 per steady-state
+    // run, since the SHA/ETag short-circuit means an unchanged source writes
+    // nothing). Faster buys little — the upstream repos are hand-curated and
+    // commit a few times a day at most.
     new CfnSchedule(this, 'ScrapeSchedule', {
       flexibleTimeWindow: { mode: 'OFF' },
-      scheduleExpression: 'cron(0 13 * * ? *)',
+      scheduleExpression: 'cron(0 1,7,13,19 * * ? *)',
       scheduleExpressionTimezone: 'UTC',
-      description: 'Daily internship scrape fan-out',
+      description: '6-hourly internship scrape fan-out',
       target: {
         arn: dispatcher.functionArn,
         roleArn: schedulerRole.roleArn,
@@ -184,11 +194,12 @@ export class ScrapeStack extends Stack {
       },
     });
 
-    // +15 min: the two-source queue drains in well under that. If sources grow
+    // +15 min after each scrape. Measured drain time for the current three
+    // sources (~2,300 listings) is ~20s, so the margin is large. If sources grow
     // substantially this becomes a race and should move to a queue-depth trigger.
     new CfnSchedule(this, 'SweepSchedule', {
       flexibleTimeWindow: { mode: 'OFF' },
-      scheduleExpression: 'cron(15 13 * * ? *)',
+      scheduleExpression: 'cron(15 1,7,13,19 * * ? *)',
       scheduleExpressionTimezone: 'UTC',
       description: 'Deactivate listings absent from source or aged out',
       target: {

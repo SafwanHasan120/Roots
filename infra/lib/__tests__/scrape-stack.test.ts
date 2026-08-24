@@ -137,20 +137,30 @@ describe('ScrapeStack', () => {
       template.resourceCountIs('AWS::Scheduler::Schedule', 2);
     });
 
-    it('runs the scrape daily at 13:00 UTC', () => {
+    it('runs the scrape every 6 hours, including 13:00 UTC', () => {
       template.hasResourceProperties('AWS::Scheduler::Schedule', {
-        ScheduleExpression: 'cron(0 13 * * ? *)',
+        ScheduleExpression: 'cron(0 1,7,13,19 * * ? *)',
         ScheduleExpressionTimezone: 'UTC',
         FlexibleTimeWindow: { Mode: 'OFF' },
       });
     });
 
-    it('runs the sweep 15 minutes after the scrape', () => {
+    it('runs the sweep 15 minutes after each scrape, on the same hours', () => {
       // The offset assumes the queue drains first; the sweep deactivates based
-      // on what the workers recorded.
-      template.hasResourceProperties('AWS::Scheduler::Schedule', {
-        ScheduleExpression: 'cron(15 13 * * ? *)',
-      });
+      // on what the workers recorded. Measured drain is ~20s.
+      const schedules = template.findResources('AWS::Scheduler::Schedule');
+      const exprs = Object.values(schedules).map(
+        (s) => s.Properties.ScheduleExpression as string,
+      );
+
+      const scrape = exprs.find((e) => e.startsWith('cron(0 '));
+      const sweep = exprs.find((e) => e.startsWith('cron(15 '));
+      expect(sweep).toBeDefined();
+
+      // Same hour field: a sweep that runs on hours the scrape does not would
+      // evaluate a run that never happened and age listings out early.
+      const hoursOf = (e: string) => e.split(' ')[1];
+      expect(hoursOf(sweep!)).toBe(hoursOf(scrape!));
     });
 
     it('invokes the dispatcher in the right mode from each schedule', () => {

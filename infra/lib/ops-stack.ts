@@ -144,14 +144,19 @@ export class OpsStack extends Stack {
 
     // --- freshness ----------------------------------------------------------
     //
-    // The scrape runs daily at 13:00 UTC. If the dispatcher has not been invoked
-    // in 26 hours, the schedule itself is broken — a case no error metric covers,
-    // because nothing ran to produce an error.
+    // The scrape runs every 6 hours (01/07/13/19 UTC), and the sweep fires 15
+    // minutes after each, so the dispatcher is invoked 8 times a day. If it has
+    // not been invoked in 8 hours, the schedule itself is broken — a case no
+    // error metric covers, because nothing ran to produce an error.
+    //
+    // 8h = one missed cycle plus margin. Sized to the schedule, not fixed: at
+    // the old daily cadence this was 26h, and leaving it there would have meant
+    // three consecutive failed runs before anyone heard about it.
 
     alarm(
       'ScrapeFreshnessAlarm',
       props.dispatcher.metricInvocations({
-        period: Duration.hours(26),
+        period: Duration.hours(8),
         statistic: 'Sum',
       }),
       {
@@ -161,7 +166,7 @@ export class OpsStack extends Stack {
         // schedule stopped firing.
         treatMissingData: TreatMissingData.BREACHING,
         description:
-          'No scrape has run in 26 hours. The schedule may be disabled or the dispatcher unreachable.',
+          'No scrape has run in 8 hours (expected every 6). The schedule may be disabled or the dispatcher unreachable.',
       },
     );
 

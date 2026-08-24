@@ -87,10 +87,13 @@ describe('OpsStack', () => {
   });
 
   describe('freshness alarm', () => {
-    it('fires when the scrape has not run in 26 hours', () => {
+    it('fires when the scrape has not run in 8 hours', () => {
+      // Sized to the 6-hourly schedule: one missed cycle plus margin. Left at
+      // the old 26h (daily) this would tolerate three consecutive failed runs
+      // before alerting.
       template.hasResourceProperties('AWS::CloudWatch::Alarm', {
         MetricName: 'Invocations',
-        Period: 26 * 3600,
+        Period: 8 * 3600,
         Threshold: 1,
         ComparisonOperator: 'LessThanThreshold',
       });

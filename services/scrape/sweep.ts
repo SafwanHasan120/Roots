@@ -22,11 +22,16 @@ import {
 /**
  * Consecutive runs a listing may be missing before deactivation.
  *
- * Runs are daily, so 3 means a vanished listing stays visible ~3 days. The
- * grace absorbs one transient GitHub failure plus one circuit-breaker trip
- * without hiding live postings.
+ * This counts RUNS, not days, so it must be resized whenever the schedule
+ * changes. Runs are every 6 hours (4/day), so 12 keeps the intended ~3-day
+ * tolerance — enough to absorb a transient GitHub failure plus a
+ * circuit-breaker trip without hiding live postings.
+ *
+ * Must stay <= the run history retained by recordRun() in ddb.ts. A window
+ * wider than the history can never fill, and decideSweep() refuses to
+ * deactivate on a partial window — so the sweep would silently stop working.
  */
-export const SWEEP_GRACE_RUNS = 3;
+export const SWEEP_GRACE_RUNS = 12;
 
 export type DeactivationReason = 'absent-from-source' | 'expired';
 

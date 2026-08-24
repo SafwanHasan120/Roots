@@ -44,7 +44,10 @@ export async function POST(request: NextRequest) {
     const upstream = await signedFetch(enqueueUrl, {
       method: 'POST',
       body,
-      headers: { authorization },
+      // NOT `authorization`: signedFetch signs with SigV4, which writes its own
+      // signature into that header and would destroy the Firebase token. The
+      // Lambda reads ID_TOKEN_HEADER (services/tailor/auth.ts).
+      headers: { 'x-firebase-token': authorization },
     });
 
     const text = await upstream.text();

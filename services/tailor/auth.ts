@@ -182,10 +182,54 @@ export async function verifyFirebaseToken(
   return { uid: payload.sub, email: payload.email };
 }
 
-/** Pull a bearer token out of Lambda function URL headers (case-insensitive). */
+/**
+ * Header carrying the Firebase ID token.
+ *
+ * NOT `authorization`. The function URL is authType AWS_IAM, so the Vercel route
+ * signs every request with SigV4 — and SigV4 *writes its signature into*
+ * `authorization`, silently destroying anything already there. Sending the
+ * Firebase token in that header meant the Lambda only ever saw
+ * `AWS4-HMAC-SHA256 Credential=...`, failed the `Bearer` match, and returned 401
+ * to a correctly signed-in user.
+ *
+ * A custom header sidesteps the collision. SigV4 still signs it (it is included
+ * in the canonical request), so it cannot be tampered with in transit.
+ */
+export const ID_TOKEN_HEADER = 'x-firebase-token';
+
+/**
+ * Pull the Firebase ID token out of Lambda function URL headers.
+ *
+ * Case-insensitive: API Gateway and function URLs lowercase header names, but
+ * tests and direct invocations may not.
+ *
+ * Accepts a bare token or a `Bearer <token>` form. The `authorization` fallback
+ * exists only for a caller that predates ID_TOKEN_HEADER; it cannot work through
+ * SigV4 and should not be relied on.
+ */
 export function bearerFrom(headers: Record<string, string | undefined>): string | null {
-  const raw =
-    headers.authorization ?? headers.Authorization ?? headers.AUTHORIZATION ?? undefined;
+  const pick = (name: string): string | undefined => {
+    const target = name.toLowerCase();
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() === target && v) return v;
+    }
+    return undefined;
+  };
+
+  // The dedicated header is ours, so a bare token is acceptable there. The
+  // `authorization` fallback stays strict `Bearer <token>` — loosening it would
+  // make `Basic <creds>` or a SigV4 signature parse as a user token.
+  const dedicated = pick(ID_TOKEN_HEADER);
+  if (dedicated) {
+    const trimmed = dedicated.trim();
+    const match = /^Bearer\s+(.+)$/i.exec(trimmed);
+    if (match) return match[1].trim();
+    // Never mistake a signature for a credential.
+    if (/^AWS4-HMAC-SHA256/i.test(trimmed)) return null;
+    return trimmed || null;
+  }
+
+  const raw = pick('authorization');
   if (!raw) return null;
   const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
   return match ? match[1].trim() : null;

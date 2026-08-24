@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { generateKeyPairSync, createSign, createPublicKey } from 'node:crypto';
-import { verifyFirebaseToken, bearerFrom, clearJwksCache, AuthError } from '../auth.js';
+import {
+  verifyFirebaseToken,
+  bearerFrom,
+  clearJwksCache,
+  AuthError,
+  ID_TOKEN_HEADER,
+} from '../auth.js';
 
 const PROJECT = 'intern-tool-4224a';
 const KID = 'test-key-1';
@@ -224,5 +230,42 @@ describe('bearerFrom', () => {
     expect(bearerFrom({})).toBeNull();
     expect(bearerFrom({ authorization: 'Basic abc' })).toBeNull();
     expect(bearerFrom({ authorization: 'Bearer' })).toBeNull();
+  });
+
+  describe('SigV4 coexistence', () => {
+    // The bug: the function URL is authType AWS_IAM, so the Vercel route signs
+    // every request with SigV4 — and SigV4 writes its signature INTO
+    // `authorization`, destroying whatever was there. Sending the Firebase token
+    // in that header meant the Lambda only saw the signature and 401'd a
+    // correctly signed-in user on every tailor attempt.
+    const SIGV4 =
+      'AWS4-HMAC-SHA256 Credential=AKIA/20260824/us-west-2/lambda/aws4_request, ' +
+      'SignedHeaders=host;x-amz-date, Signature=deadbeef';
+
+    it('reads the token from the dedicated header while SigV4 owns authorization', () => {
+      expect(bearerFrom({ authorization: SIGV4, [ID_TOKEN_HEADER]: 'Bearer fb-token' })).toBe(
+        'fb-token',
+      );
+    });
+
+    it('accepts a bare token in the dedicated header', () => {
+      expect(bearerFrom({ [ID_TOKEN_HEADER]: 'fb-token' })).toBe('fb-token');
+    });
+
+    it('never mistakes a SigV4 signature for a user token', () => {
+      expect(bearerFrom({ authorization: SIGV4 })).toBeNull();
+      expect(bearerFrom({ [ID_TOKEN_HEADER]: SIGV4 })).toBeNull();
+    });
+
+    it('matches the dedicated header case-insensitively', () => {
+      // Function URLs lowercase header names; direct invocations may not.
+      expect(bearerFrom({ 'X-Firebase-Token': 'Bearer fb' })).toBe('fb');
+    });
+
+    it('prefers the dedicated header over a stale authorization bearer', () => {
+      expect(
+        bearerFrom({ authorization: 'Bearer old', [ID_TOKEN_HEADER]: 'Bearer new' }),
+      ).toBe('new');
+    });
   });
 });

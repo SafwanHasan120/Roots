@@ -24,6 +24,21 @@ export async function signedFetch(
 ): Promise<Response> {
   const target = new URL(url);
 
+  // SigV4 writes its signature into `authorization`. A caller-supplied value
+  // there is not merged or appended — it is silently destroyed, and the request
+  // still succeeds, so the loss shows up as a confusing 401 from the far end
+  // rather than an error here. This cost a real debugging session: the Firebase
+  // token was passed in `authorization` and never reached the Lambda.
+  for (const key of Object.keys(init.headers ?? {})) {
+    if (key.toLowerCase() === 'authorization') {
+      throw new Error(
+        'signedFetch: refusing to sign a request with a caller-supplied `authorization` ' +
+          'header — SigV4 overwrites it. Use a distinct header (e.g. x-firebase-token); ' +
+          'it is still covered by the signature.',
+      );
+    }
+  }
+
   const signer = new SignatureV4({
     service: 'lambda',
     region: AWS_REGION,

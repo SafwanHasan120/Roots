@@ -16,8 +16,20 @@
 
 import { createPublicKey, createVerify } from 'node:crypto';
 
+/**
+ * Google's public keys for Firebase ID tokens, in JWK form.
+ *
+ * The path is `/metadata/jwk/`. An earlier version used `/jwks/`, which does not
+ * exist and returns 404 — so every verification failed with "Authentication
+ * unavailable" and the user was told to sign in again. Nothing in the unit
+ * tests caught it, because they stub the fetch.
+ *
+ * Do not "simplify" this to `/jwks/`. The sibling endpoint
+ * `/robot/v1/metadata/x509/...` also works but returns PEM certificates, which
+ * would need parsing; this one returns JWKs that createPublicKey takes directly.
+ */
 const JWKS_URL =
-  'https://www.googleapis.com/service_accounts/v1/jwks/securetoken@system.gserviceaccount.com';
+  'https://www.googleapis.com/service_accounts/v1/metadata/jwk/securetoken@system.gserviceaccount.com';
 
 export class AuthError extends Error {
   constructor(

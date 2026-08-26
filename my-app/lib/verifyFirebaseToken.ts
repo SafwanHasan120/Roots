@@ -15,8 +15,18 @@ import { createPublicKey, createVerify } from 'crypto';
  * instead, which does its own verification.
  */
 
+/**
+ * Google's public keys for Firebase ID tokens, in JWK form.
+ *
+ * The path is `/metadata/jwk/`. An earlier version used `/jwks/`, which does not
+ * exist and returns 404 — every verification failed and the status poll returned
+ * 401 to a signed-in user. Unit tests stub the fetch, so only a live request
+ * catches this; see the reachability test in the suite for this file.
+ *
+ * Must stay identical to JWKS_URL in services/tailor/auth.ts.
+ */
 const JWKS_URL =
-  'https://www.googleapis.com/service_accounts/v1/jwks/securetoken@system.gserviceaccount.com';
+  'https://www.googleapis.com/service_accounts/v1/metadata/jwk/securetoken@system.gserviceaccount.com';
 
 interface Jwk {
   kid: string;

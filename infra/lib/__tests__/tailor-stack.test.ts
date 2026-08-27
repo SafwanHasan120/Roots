@@ -23,6 +23,7 @@ describe('TailorStack', () => {
       table: data.table,
       anthropicKeyParameterName: '/intern-tool/anthropic-api-key',
       firebaseProjectId: 'intern-tool-4224a',
+      artifactOrigins: ['https://roots-yye7.vercel.app'],
     });
     template = Template.fromStack(tailor);
   });
@@ -79,6 +80,60 @@ describe('TailorStack', () => {
             Match.objectLike({ ExpirationInDays: 30, Status: 'Enabled' }),
           ]),
         },
+      });
+    });
+
+    describe('CORS', () => {
+      // The browser fetches the presigned URL directly. With no CORS rule S3
+      // returns the object with a 200 but omits Access-Control-Allow-Origin, so
+      // the browser discards it — the download fails while every server-side
+      // check looks healthy.
+      it('allows the browser to read artifacts', () => {
+        template.hasResourceProperties('AWS::S3::Bucket', {
+          CorsConfiguration: {
+            CorsRules: Match.arrayWith([
+              Match.objectLike({
+                AllowedMethods: Match.arrayWith(['GET']),
+                AllowedOrigins: ['https://roots-yye7.vercel.app'],
+              }),
+            ]),
+          },
+        });
+      });
+
+      it('never allows a wildcard origin', () => {
+        // `*` would let any site holding a presigned URL read a user's tailored
+        // resume. The bucket is BLOCK_ALL, but CORS governs who may read the
+        // response of an already-authorized request — it is not access control,
+        // and a wildcard here is a real leak.
+        const buckets = template.findResources('AWS::S3::Bucket');
+        const origins = Object.values(buckets).flatMap(
+          (b) =>
+            (b.Properties?.CorsConfiguration?.CorsRules ?? []).flatMap(
+              (r: { AllowedOrigins?: string[] }) => r.AllowedOrigins ?? [],
+            ) as string[],
+        );
+
+        expect(origins.length).toBeGreaterThan(0);
+        expect(origins).not.toContain('*');
+        for (const origin of origins) {
+          expect(origin).toMatch(/^https:\/\//);
+          expect(origin).not.toMatch(/\/$/); // trailing slash never matches
+        }
+      });
+
+      it('grants no write methods to the browser', () => {
+        // Uploads happen from the worker with IAM credentials, never the client.
+        const buckets = template.findResources('AWS::S3::Bucket');
+        const methods = Object.values(buckets).flatMap(
+          (b) =>
+            (b.Properties?.CorsConfiguration?.CorsRules ?? []).flatMap(
+              (r: { AllowedMethods?: string[] }) => r.AllowedMethods ?? [],
+            ) as string[],
+        );
+        for (const method of methods) {
+          expect(['GET', 'HEAD']).toContain(method);
+        }
       });
     });
 

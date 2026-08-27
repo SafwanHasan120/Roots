@@ -19,6 +19,7 @@ describe('OpsStack', () => {
       table: data.table,
       anthropicKeyParameterName: '/intern-tool/anthropic-api-key',
       firebaseProjectId: 'intern-tool-4224a',
+      artifactOrigins: ['https://roots-yye7.vercel.app'],
     });
     const ops = new OpsStack(app, 'TestOps', {
       env,

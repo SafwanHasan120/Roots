@@ -74,6 +74,7 @@ function synthesizeAll(): Array<{ name: string; template: Template }> {
     table: data.table,
     anthropicKeyParameterName: '/intern-tool/anthropic-api-key',
     firebaseProjectId: 'intern-tool-4224a',
+    artifactOrigins: ['https://roots-yye7.vercel.app'],
   });
   stacks.push(tailor);
   stacks.push(

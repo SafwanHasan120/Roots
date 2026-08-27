@@ -60,6 +60,13 @@ const tailor = new TailorStack(app, 'InternToolTailor', {
   // them with an indistinguishable 401.
   firebaseProjectId: process.env.FIREBASE_PROJECT_ID ?? 'intern-tool-4224a',
   vercelRole: vercel.role,
+  // The browser downloads the tailored .tex straight from S3 via a presigned
+  // URL, so this must list the exact origin the app is served from — including
+  // the scheme, and with no trailing slash. Production only, matching the OIDC
+  // trust policy above; a preview deployment cannot download artifacts.
+  artifactOrigins: (
+    process.env.ARTIFACT_ORIGINS ?? 'https://roots-yye7.vercel.app'
+  ).split(',').map((o) => o.trim()).filter(Boolean),
 });
 
 // Alarms and dashboard. Observation-only — nothing in the data path depends on

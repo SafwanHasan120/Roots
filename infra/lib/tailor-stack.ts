@@ -6,7 +6,7 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Queue } from 'aws-cdk-lib/aws-sqs';
 import { RetentionDays } from 'aws-cdk-lib/aws-logs';
-import { Bucket, BlockPublicAccess, BucketEncryption } from 'aws-cdk-lib/aws-s3';
+import { Bucket, BlockPublicAccess, BucketEncryption, HttpMethods } from 'aws-cdk-lib/aws-s3';
 import { PolicyStatement, type IRole } from 'aws-cdk-lib/aws-iam';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import type { TableV2 } from 'aws-cdk-lib/aws-dynamodb';
@@ -24,6 +24,18 @@ export interface TailorStackProps extends StackProps {
   firebaseProjectId: string;
   /** Vercel's OIDC role, granted permission to invoke the function URL. */
   vercelRole?: IRole;
+  /**
+   * Browser origins allowed to download artifacts from the bucket.
+   *
+   * The client fetches the presigned URL directly, so without a matching CORS
+   * rule S3 returns the object but omits `Access-Control-Allow-Origin` and the
+   * browser blocks the read — a 200 that still fails, which is why this was easy
+   * to miss.
+   *
+   * Exact origins only. A `*` here would let any site that obtained a presigned
+   * URL read a user's tailored resume.
+   */
+  artifactOrigins: string[];
 }
 
 /**
@@ -52,6 +64,24 @@ export class TailorStack extends Stack {
       // job. 30 days keeps storage near zero; the UI says so explicitly.
       lifecycleRules: [{ expiration: Duration.days(30) }],
       removalPolicy: RemovalPolicy.RETAIN,
+      // The browser fetches the presigned URL directly, so S3 must answer the
+      // cross-origin read. Without this it serves the object with a 200 but no
+      // Access-Control-Allow-Origin, and the browser discards it — the request
+      // looks successful everywhere except in the page.
+      //
+      // This does NOT grant access: BLOCK_ALL still applies and every request
+      // needs a valid presigned signature. CORS only decides which origins may
+      // *read the response* of a request that was already authorized.
+      cors: [
+        {
+          allowedMethods: [HttpMethods.GET, HttpMethods.HEAD],
+          allowedOrigins: props.artifactOrigins,
+          // Presigned GETs carry their auth in the query string, so no custom
+          // request headers are needed.
+          allowedHeaders: ['*'],
+          maxAge: 3000,
+        },
+      ],
     });
 
     // --- queues -------------------------------------------------------------

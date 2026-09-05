@@ -21,7 +21,10 @@ const COMMON_WORDS = new Set([
   'neither', 'your', 'our', 'their', 'his', 'her', 'its', 'my',
 ]);
 
-function tokenize(text: string): Set<string> {
+// Exported so changeDetect.ts shares one definition of "word" with coverage
+// scoring. A second tokenizer would let the two disagree about whether a term
+// counts, which is exactly the kind of drift that produces confusing questions.
+export function tokenize(text: string): Set<string> {
   const tokens = new Set<string>();
 
   // Split on non-alphanumeric/dot/plus/dash, but keep some compound forms

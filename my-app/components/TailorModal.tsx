@@ -103,6 +103,22 @@ export default function TailorModal() {
 
       {/* Panel */}
       <div className="relative z-10 flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl border border-gray-200/80 bg-white shadow-2xl spa-fade-up sm:rounded-3xl">
+        {/* Page-overflow warning. Advisory: the job still succeeded and the
+            .tex is usable, but the estimate says it runs past one page. */}
+        {result.fitStatus === 'over' && (
+          <div className="flex items-start gap-3 border-b border-amber-200 bg-amber-50/80 px-6 py-4 sm:px-8">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-medium text-amber-900">Likely longer than one page</p>
+              <p className="text-sm text-amber-800">
+                Estimated at {result.fitPt ?? '?'} of {result.fitBudgetPt ?? '?'} points.
+                Shorten or remove a bullet before submitting — this is an estimate from the
+                source, not a compiled page count.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Degraded Banner */}
         {result.degraded && (
           <div className="flex items-start gap-3 border-b border-yellow-200 bg-yellow-50/80 px-6 py-4 sm:px-8">

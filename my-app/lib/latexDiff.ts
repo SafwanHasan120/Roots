@@ -1,3 +1,5 @@
+import { extractResumeItems, extractPlainItems } from './latexBullets';
+
 export interface DiffLine {
   type: 'unchanged' | 'added' | 'removed' | 'changed';
   before?: string;
@@ -5,19 +7,23 @@ export interface DiffLine {
   lineNum?: number;
 }
 
+/**
+ * Bullets, from either template style.
+ *
+ * Previously this matched only lines starting with `\item`, which extracted
+ * NOTHING from an sb2nov resume: `'\resumeItem'.startsWith('\item')` is false
+ * (`\r` !== `\i`). Since sb2nov is the template this app targets, the Changes
+ * tab showed "No changes detected" for every real tailor result.
+ *
+ * `\resumeItem{...}` is preferred and falls back to bare `\item` so
+ * non-sb2nov resumes still diff.
+ */
 function extractBullets(latex: string): string[] {
-  // Extract bullet points (\\item lines) from LaTeX
-  const lines = latex.split('\n');
-  const bullets: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('\\item')) {
-      bullets.push(trimmed);
-    }
+  const resumeItems = extractResumeItems(latex);
+  if (resumeItems.length > 0) {
+    return resumeItems.map((b) => b.body.trim());
   }
-
-  return bullets;
+  return extractPlainItems(latex);
 }
 
 export function computeLatexDiff(before: string, after: string): DiffLine[] {

@@ -65,6 +65,17 @@ function countEntities(
   return matches.length;
 }
 
+/**
+ * Count `\resumeItem{...}` bullets.
+ *
+ * Separate from countEntities because `\resumeItem` is a prefix of
+ * `\resumeItemListStart` and `\resumeItemListEnd`; requiring the opening brace
+ * is what distinguishes a bullet from its surrounding list macros.
+ */
+function countItems(text: string): number {
+  return (text.match(/\\resumeItem\s*\{/g) || []).length;
+}
+
 export function validateTailoredLatex(
   input: string,
   output: string
@@ -113,6 +124,22 @@ export function validateTailoredLatex(
   if (outputProjectCount > inputProjectCount) {
     errors.push(
       `New \\resumeProjectHeading entries detected: ${inputProjectCount} in input, ${outputProjectCount} in output`
+    );
+  }
+
+  // Bullets, same rule. Without this the model could add unlimited \resumeItem
+  // entries: nothing else here bounds document length, and the prompt's own
+  // "never add" rule was unenforced for bullets specifically.
+  //
+  // Counted with a trailing brace because a bare \resumeItem pattern also
+  // matches \resumeItemListStart and \resumeItemListEnd — which would report 3
+  // for a single bullet and make this check fire on correct output.
+  const inputItemCount = countItems(input);
+  const outputItemCount = countItems(output);
+
+  if (outputItemCount > inputItemCount) {
+    errors.push(
+      `New \\resumeItem entries detected: ${inputItemCount} in input, ${outputItemCount} in output`
     );
   }
 

@@ -22,6 +22,7 @@ import { extractJD } from '@app/jdExtractor';
 import { analyzeJD } from '@app/jdAnalyzer';
 import { computeKeywordGap } from '@app/keywordGap';
 import { validateTailoredLatex } from '@app/latexValidator';
+import { estimateFit } from '@app/latexFit';
 import { tailorLatexWithAnalysis, tailorLatexDegraded, getAnthropicKey } from './tailorLatex.js';
 import { consume, release } from './rateLimit.js';
 import { markRunning, markDone, markFailed, markNeedsJd, getJob } from './jobs.js';
@@ -140,6 +141,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
       coverageBefore: result.coverageBefore,
       coverageAfter: result.coverageAfter,
       degraded: result.degraded,
+      fitPt: result.fitPt,
+      fitBudgetPt: result.fitBudgetPt,
+      fitStatus: result.fitStatus,
     });
 
     // Charge only now: the artifact exists and passed validation.
@@ -196,6 +200,11 @@ interface PipelineResult {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded: boolean;
+  /** Estimated height of the delivered resume, when the template was recognised. */
+  fitPt?: number;
+  fitBudgetPt?: number;
+  /** 'unknown' means the template was not recognised, not that it fits. */
+  fitStatus?: 'fits' | 'over' | 'unknown';
 }
 
 async function runPipeline(input: {
@@ -259,6 +268,11 @@ async function runPipeline(input: {
   let coverageAfter = 0;
   let degraded = false;
 
+  // Measured before the model runs so the budget can go into the prompt.
+  // Preventing overflow costs ~60 tokens; correcting it afterwards costs a
+  // second Claude call, so the pre-flight constraint is the whole strategy.
+  const inputFit = estimateFit(latex);
+
   if (jdConfidence === 'high') {
     let analysis;
     try {
@@ -278,6 +292,7 @@ async function runPipeline(input: {
           jdText,
           analysis,
           beforeGap.missing,
+          inputFit,
         );
       } catch (err) {
         throw new JobError(
@@ -293,7 +308,12 @@ async function runPipeline(input: {
 
   if (degraded || jdConfidence === 'low' || !tailoredLatex) {
     try {
-      tailoredLatex = await tailorLatexDegraded(internship.company, internship.role, latex);
+      tailoredLatex = await tailorLatexDegraded(
+        internship.company,
+        internship.role,
+        latex,
+        inputFit,
+      );
       degraded = true;
     } catch (err) {
       throw new JobError(
@@ -322,11 +342,36 @@ async function runPipeline(input: {
     );
   }
 
+  // Advisory only: a resume that runs slightly long is still a useful artifact,
+  // and failing the job would deliver nothing while charging another Claude call
+  // on the retry. The estimate is also a heuristic with a known blind spot for
+  // unrecognised templates, which is the wrong thing to hard-gate on.
+  const outputFit = estimateFit(tailoredLatex);
+  if (outputFit.confidence === 'high' && !outputFit.fits) {
+    console.warn(
+      JSON.stringify({
+        msg: 'tailored resume exceeds one page',
+        totalPt: outputFit.totalPt,
+        budgetPt: outputFit.budgetPt,
+        linesOver: outputFit.linesOver,
+        inputPt: inputFit.confidence === 'high' ? inputFit.totalPt : null,
+      }),
+    );
+  } else if (outputFit.confidence === 'low') {
+    console.info(
+      JSON.stringify({ msg: 'fit not estimated', reasons: outputFit.reasons }),
+    );
+  }
+
   return {
     latex: tailoredLatex,
     coverageBefore: coverageBefore > 0 ? coverageBefore : undefined,
     coverageAfter: coverageAfter > 0 ? coverageAfter : undefined,
     degraded,
+    fitPt: outputFit.confidence === 'high' ? outputFit.totalPt : undefined,
+    fitBudgetPt: outputFit.confidence === 'high' ? outputFit.budgetPt : undefined,
+    fitStatus:
+      outputFit.confidence !== 'high' ? 'unknown' : outputFit.fits ? 'fits' : 'over',
   };
 }
 

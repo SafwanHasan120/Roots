@@ -10,6 +10,8 @@
  * connection could only be bounded by the platform's own request limit.
  */
 
+import { FIT_CONSTANTS, type FitEstimate } from '@app/latexFit';
+
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 8192;
@@ -124,11 +126,47 @@ async function callClaude(systemPrompt: string, userMessage: string): Promise<st
   return content.text;
 }
 
+/**
+ * A concrete page budget for the prompt.
+ *
+ * Expressed in lines and characters, never points. Rendered height is a step
+ * function of bullet length: trimming a few characters usually costs nothing,
+ * because cost only changes when a bullet crosses the wrap boundary. "Cut 30pt"
+ * is therefore close to unactionable, while "keep this bullet under 118
+ * characters" is a rule the model can follow.
+ *
+ * Costs ~60 input tokens (~$0.0002) and is what prevents the far more expensive
+ * corrective round-trip.
+ */
+export function fitConstraint(fit: FitEstimate): string {
+  if (fit.confidence !== 'high') return '';
+
+  const C = FIT_CONSTANTS;
+  const lines = [
+    '',
+    'Length budget (the resume must stay on ONE page):',
+    `- The page holds ${C.PAGE_BUDGET_PT} points. The input resume uses ${fit.totalPt}.`,
+    `- A bullet costs ${C.BULLET_FIRST_PT} points for its first line and ${C.BULLET_LINE_PT} for each additional line.`,
+    `- A line holds about ${C.CHARS_PER_LINE} visible characters, so a bullet longer than that wraps and costs another line.`,
+    '- Keep each rewritten bullet within the same number of lines as the original. Prefer shorter.',
+  ];
+
+  const multiline = fit.items.filter((i) => i.wrappedLines > 1).length;
+  if (multiline > 0) {
+    lines.push(
+      `- ${multiline} of the ${fit.items.length} bullets already wrap to 2+ lines; do not lengthen those.`,
+    );
+  }
+
+  return lines.join('\n');
+}
+
 export async function tailorLatexWithAnalysis(
   latex: string,
   _jdText: string,
   analysis: JdAnalysis,
   missing: string[],
+  fit?: FitEstimate,
 ): Promise<string> {
   const requirementsSummary = `Required Skills: ${analysis.required_skills.join(', ')}
 Preferred Skills: ${analysis.preferred_skills.join(', ')}
@@ -140,10 +178,13 @@ Missing Keywords in Resume: ${missing.join(', ')}`;
 
 Rules:
 - Never add sections, experience entries, projects, or skills not already in the input
+- Never introduce a technology, tool, or framework that does not already appear in the input, even when the job asks for it
 - Never alter or add a numeric value (dates, metrics, percentages)
+- Never add a bullet; the output must not contain more \\resumeItem entries than the input
 - Reorder and rewrite existing bullets to surface covered keywords from the job
 - If space is needed, delete the weakest bullet from the least relevant section
 - Output the complete .tex file only, starting with \\documentclass, no markdown fences
+${fit ? fitConstraint(fit) : ''}
 
 Focus on: ${missing.slice(0, 5).join(', ')}`;
 
@@ -160,15 +201,19 @@ export async function tailorLatexDegraded(
   company: string,
   role: string,
   latex: string,
+  fit?: FitEstimate,
 ): Promise<string> {
   const systemPrompt = `You are a resume editor. Make minor improvements without access to full job requirements.
 
 Rules:
 - Never add sections, experience entries, projects, or skills not already in the input
+- Never introduce a technology, tool, or framework that does not already appear in the input
 - Never alter or add a numeric value (dates, metrics, percentages)
+- Never add a bullet; the output must not contain more \\resumeItem entries than the input
 - Reorder and enhance existing bullets to highlight relevance to the role
 - If space is needed, delete the weakest bullet from the least relevant section
-- Output the complete .tex file only, starting with \\documentclass, no markdown fences`;
+- Output the complete .tex file only, starting with \\documentclass, no markdown fences
+${fit ? fitConstraint(fit) : ''}`;
 
   const userMessage = `Company: ${company}
 Role: ${role}

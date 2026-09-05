@@ -105,6 +105,11 @@ export async function GET(request: NextRequest) {
         coverageBefore: res.Item.coverageBefore ?? undefined,
         coverageAfter: res.Item.coverageAfter ?? undefined,
         degraded: res.Item.degraded ?? false,
+        fitPt: res.Item.fitPt ?? undefined,
+        fitBudgetPt: res.Item.fitBudgetPt ?? undefined,
+        // Absent on jobs written before fit estimation existed; 'unknown' is the
+        // honest reading of a missing value, not 'fits'.
+        fitStatus: res.Item.fitStatus ?? 'unknown',
       },
       { status: 200, headers },
     );

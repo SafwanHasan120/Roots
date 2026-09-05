@@ -42,7 +42,11 @@ describe('signedFetch', () => {
   });
 
   it('signs a custom token header through to the request', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    // Typed args: a zero-arg mock infers an empty tuple, so indexing calls[0][1]
+    // is a type error even though the call really does carry an init object.
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) => new Response('{}', { status: 200 }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await signedFetch('https://x.lambda-url.us-west-2.on.aws/', {

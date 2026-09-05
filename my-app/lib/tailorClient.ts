@@ -13,6 +13,14 @@ export interface TailorJobResult {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded?: boolean;
+  /** Estimated rendered height in points, when the template was recognised. */
+  fitPt?: number;
+  fitBudgetPt?: number;
+  /**
+   * Advisory one-page estimate. 'unknown' means the template was not
+   * recognised — it does NOT mean the resume fits.
+   */
+  fitStatus?: 'fits' | 'over' | 'unknown';
 }
 
 export class TailorError extends Error {
@@ -141,6 +149,9 @@ async function pollJob(
       coverageBefore?: number;
       coverageAfter?: number;
       degraded?: boolean;
+      fitPt?: number;
+      fitBudgetPt?: number;
+      fitStatus?: 'fits' | 'over' | 'unknown';
     };
 
     if (!res.ok) {
@@ -177,6 +188,9 @@ async function pollJob(
         coverageBefore: data.coverageBefore,
         coverageAfter: data.coverageAfter,
         degraded: data.degraded,
+        fitPt: data.fitPt,
+        fitBudgetPt: data.fitBudgetPt,
+        fitStatus: data.fitStatus,
       };
     }
   }

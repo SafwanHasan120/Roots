@@ -1,0 +1,162 @@
+%-------------------------
+% Resume in Latex
+% Author: Jake Gutierrez / sb2nov
+% License: MIT
+%
+% FIXTURE NOTE: this is a genuine sb2nov/Jake-template resume, kept byte-stable
+% because my-app/lib/latexFit.ts calibrates its point constants against exactly
+% this preamble (letterpaper, 10pt, fullpage, +1in textwidth, +1in textheight).
+% Changing the preamble invalidates those constants and the golden fit test.
+%------------------------
+
+\documentclass[letterpaper,10pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+% Ensure that generate pdf is machine readable/ATS parsable
+\pdfgentounicode=1
+
+%-------------------------
+% Custom commands
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+    \textbf{\Huge \scshape Alex Rivera} \\ \vspace{1pt}
+    \small 555-0100 $|$ \href{mailto:alex@example.com}{\underline{alex@example.com}} $|$
+    \href{https://linkedin.com/in/example}{\underline{linkedin.com/in/example}} $|$
+    \href{https://github.com/example}{\underline{github.com/example}}
+\end{center}
+
+%-----------EDUCATION-----------
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {State University}{Aug. 2023 -- May 2027}
+      {Bachelor of Science in Computer Science}{Springfield, IL}
+  \resumeSubHeadingListEnd
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+  \resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Software Engineering Intern}{May 2026 -- Aug. 2026}
+      {Northwind Systems}{Seattle, WA}
+      \resumeItemListStart
+        \resumeItem{Built a REST API in Python and Flask that served authentication requests for internal tools}
+        \resumeItem{Wrote unit tests with pytest and raised coverage on the billing module}
+        \resumeItem{Migrated a batch job to run on a scheduled worker, cutting manual runs}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Undergraduate Research Assistant}{Jan. 2026 -- Apr. 2026}
+      {University Systems Lab}{Springfield, IL}
+      \resumeItemListStart
+        \resumeItem{Instrumented a distributed key-value store and collected latency measurements under load}
+        \resumeItem{Automated the experiment harness in Bash so runs could be reproduced from a single command}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Teaching Assistant, Data Structures}{Sep. 2025 -- Dec. 2025}
+      {State University}{Springfield, IL}
+      \resumeItemListStart
+        \resumeItem{Held weekly office hours and graded assignments for a section of students}
+        \resumeItem{Wrote supplementary notes on graph traversal that the instructor reused the next term}
+      \resumeItemListEnd
+
+  \resumeSubHeadingListEnd
+
+%-----------PROJECTS-----------
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{Transit Tracker} $|$ \emph{Python, React, PostgreSQL}}{Feb. 2026}
+          \resumeItemListStart
+            \resumeItem{Built a web app that displays live bus arrival estimates from a public transit feed}
+            \resumeItem{Added a caching layer so repeated lookups avoided refetching the upstream feed}
+          \resumeItemListEnd
+      \resumeProjectHeading
+          {\textbf{Markdown Notes} $|$ \emph{TypeScript, Node.js}}{Oct. 2025}
+          \resumeItemListStart
+            \resumeItem{Wrote a note-taking CLI with full-text search over a local index}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+%-----------TECHNICAL SKILLS-----------
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, TypeScript, Java, SQL, Bash} \\
+     \textbf{Frameworks}{: React, Flask, Node.js, pytest} \\
+     \textbf{Developer Tools}{: Git, Docker, Linux, VS Code} \\
+    }}
+ \end{itemize}
+
+\end{document}

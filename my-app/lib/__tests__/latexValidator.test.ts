@@ -209,6 +209,43 @@ Content
           e.includes('New') && e.includes('entries detected')
         )).toHaveLength(0);
       });
+
+      describe('bullet counts', () => {
+        const wrap = (items: string) => `\\documentclass{article}
+\\begin{document}
+\\resumeItemListStart
+${items}
+\\resumeItemListEnd
+\\end{document}`;
+
+        it('rejects added bullets', () => {
+          // Nothing else bounds document length, so an unchecked \\resumeItem
+          // count let the model grow a one-page resume onto a second page.
+          const input = wrap('\\resumeItem{One}');
+          const output = wrap('\\resumeItem{One}\n\\resumeItem{Two}');
+
+          const result = validateTailoredLatex(input, output);
+          expect(result.ok).toBe(false);
+          expect(result.errors.some((e) => e.includes('New \\resumeItem'))).toBe(true);
+        });
+
+        it('allows deleting a bullet', () => {
+          // The prompt tells the model to drop the weakest bullet when space is
+          // needed, so removal must stay legal.
+          const input = wrap('\\resumeItem{One}\n\\resumeItem{Two}');
+          const output = wrap('\\resumeItem{One}');
+
+          expect(validateTailoredLatex(input, output).ok).toBe(true);
+        });
+
+        it('does not miscount the list macros as bullets', () => {
+          // \\resumeItem is a prefix of \\resumeItemListStart/End. Counting the
+          // bare command reports 3 for one bullet, which would fire this check
+          // on correct output.
+          const input = wrap('\\resumeItem{One}');
+          expect(validateTailoredLatex(input, input).ok).toBe(true);
+        });
+      });
     });
 
     describe('metric validation', () => {

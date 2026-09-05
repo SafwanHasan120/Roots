@@ -10,6 +10,10 @@ export interface TailorResult {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded?: boolean;
+  /** Advisory one-page estimate; 'unknown' means the template was unrecognised. */
+  fitStatus?: 'fits' | 'over' | 'unknown';
+  fitPt?: number;
+  fitBudgetPt?: number;
 }
 
 /**
@@ -124,6 +128,11 @@ export async function saveTailorResultToFirestore(uid: string, result: TailorRes
       coverageBefore: result.coverageBefore,
       coverageAfter: result.coverageAfter,
       degraded: result.degraded,
+      // Firestore rejects `undefined`, so coerce rather than spreading the
+      // optional fields straight through.
+      fitStatus: result.fitStatus ?? null,
+      fitPt: result.fitPt ?? null,
+      fitBudgetPt: result.fitBudgetPt ?? null,
       tailoredAt: Timestamp.fromMillis(result.tailoredAt),
     });
   } catch (error) {
@@ -158,6 +167,11 @@ export async function loadTailorResultsFromFirestore(uid: string): Promise<Map<s
         coverageBefore: data.coverageBefore,
         coverageAfter: data.coverageAfter,
         degraded: data.degraded,
+        // Stored as null (Firestore rejects undefined) and absent entirely on
+        // results predating fit estimation; both read back as undefined.
+        fitStatus: data.fitStatus ?? undefined,
+        fitPt: data.fitPt ?? undefined,
+        fitBudgetPt: data.fitBudgetPt ?? undefined,
         tailoredAt: (data.tailoredAt as Timestamp)?.toMillis?.() || Date.now(),
       };
       results.set(data.internshipId, result);

@@ -8,6 +8,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useTailor } from '@/context/TailorContext';
 import { useResume } from '@/context/ResumeContext';
 import { formatDateToMonthDay } from '@/lib/scraper';
+import { companyFocus, type CompanyFocus } from '@/lib/companies';
 import { locationMatches, topLocationPills } from '@/lib/places';
 import { ROLE_LABELS, rolesFor } from '@/lib/roleBuckets';
 import { tailorResume, TailorError, NeedsJobDescriptionError } from '@/lib/tailorClient';
@@ -74,28 +75,6 @@ function HeartIcon({ filled, className }: { filled?: boolean; className?: string
     </svg>
   );
 }
-function CaretIcon({ direction, className }: { direction?: 'up' | 'down' | null; className?: string }) {
-  if (direction === 'up') {
-    return (
-      <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-        <path d="M7 14l5-5 5 5z" />
-      </svg>
-    );
-  }
-  if (direction === 'down') {
-    return (
-      <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-        <path d="M7 10l5 5 5-5z" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true" opacity={0.3}>
-      <path d="M7 10l5 5 5-5z" />
-    </svg>
-  );
-}
-
 function ChevronIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
@@ -109,7 +88,10 @@ const PILL_BASE =
 const PILL_ON = 'border-transparent bg-gray-900 text-white shadow-sm';
 const PILL_OFF = 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-900';
 
-type SortDirection = 'asc' | 'desc' | null;
+const COMPANY_PILLS: { id: CompanyFocus; label: string }[] = [
+  { id: 'tech', label: 'Big tech' },
+  { id: 'finance', label: 'Finance & trading' },
+];
 
 /**
  * Company runs rendered per page, and how many each "show more" adds.
@@ -167,7 +149,7 @@ export default function InternshipTable({ internships, showFavorites = true, onl
   const [query, setQuery] = useState('');
   const [activeLocs, setActiveLocs] = useState<Set<string>>(new Set());
   const [activeRoles, setActiveRoles] = useState<Set<string>>(new Set());
-  const [sortDir, setSortDir] = useState<SortDirection>(null);
+  const [activeCompanies, setActiveCompanies] = useState<Set<string>>(new Set());
   const [tailoring, setTailoring] = useState<Map<string, boolean>>(new Map());
   const [tailorErrors, setTailorErrors] = useState<Map<string, string>>(new Map());
   const [tailorNotices, setTailorNotices] = useState<TailorWidgetJob[]>([]);
@@ -229,7 +211,7 @@ export default function InternshipTable({ internships, showFavorites = true, onl
       setQuery('');
       setActiveLocs(new Set());
       setActiveRoles(new Set());
-      setSortDir(null);
+      setActiveCompanies(new Set());
     }
   }, [onlyFavorites]);
 
@@ -252,6 +234,15 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     [internships],
   );
 
+  const companyCounts = useMemo(() => {
+    const counts: Record<CompanyFocus, number> = { tech: 0, finance: 0 };
+    for (const i of internships) {
+      const focus = companyFocus(i.company);
+      if (focus) counts[focus] += 1;
+    }
+    return counts;
+  }, [internships]);
+
   const filtered = useMemo(() => {
     // query → fuse.search OR passthrough
     let rows = query.trim()
@@ -271,20 +262,23 @@ export default function InternshipTable({ internships, showFavorites = true, onl
       rows = rows.filter((i) => rolesFor(i.role).some((label) => activeRoles.has(label)));
     }
 
-    return rows;
-  }, [query, fuse, internships, activeLocs, activeRoles]);
+    // filter company pills (match any selected group)
+    if (activeCompanies.size > 0) {
+      rows = rows.filter((i) => {
+        const focus = companyFocus(i.company);
+        return focus !== null && activeCompanies.has(focus);
+      });
+    }
 
-  // Apply sorting to filtered results
+    return rows;
+  }, [query, fuse, internships, activeLocs, activeRoles, activeCompanies]);
+
+  // Newest first. Unknown dates (dateMs 0) sort last.
   const sorted = useMemo(() => {
-    if (!sortDir) return filtered;
     const copy = [...filtered];
-    copy.sort((a, b) => {
-      const aDate = a.dateMs || 0;
-      const bDate = b.dateMs || 0;
-      return sortDir === 'asc' ? aDate - bDate : bDate - aDate;
-    });
+    copy.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
     return copy;
-  }, [filtered, sortDir]);
+  }, [filtered]);
 
   const allGroups = useMemo(() => groupByAdjacentCompany(sorted), [sorted]);
 
@@ -318,13 +312,14 @@ export default function InternshipTable({ internships, showFavorites = true, onl
   useEffect(() => {
     setExpanded(new Set());
     setVisibleGroups(GROUP_PAGE_SIZE);
-  }, [query, activeLocs, activeRoles, sortDir]);
+  }, [query, activeLocs, activeRoles, activeCompanies]);
 
-  const hasFilters = query.trim() !== '' || activeLocs.size > 0 || activeRoles.size > 0;
+  const hasFilters = query.trim() !== '' || activeLocs.size > 0 || activeRoles.size > 0 || activeCompanies.size > 0;
   const clearAll = () => {
     setQuery('');
     setActiveLocs(new Set());
     setActiveRoles(new Set());
+    setActiveCompanies(new Set());
   };
 
   /**
@@ -439,6 +434,32 @@ export default function InternshipTable({ internships, showFavorites = true, onl
           />
         </div>
 
+        {/* Company */}
+        <div className="mt-6">
+          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">
+            Company
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {COMPANY_PILLS.map(({ id, label }) => {
+              const on = activeCompanies.has(id);
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => setActiveCompanies((s) => toggle(s, id))}
+                  className={`${PILL_BASE} ${on ? PILL_ON : PILL_OFF}`}
+                >
+                  {label}
+                  <span className={`ml-0.5 tabular-nums ${on ? 'text-white/60' : 'text-gray-500'}`}>
+                    {companyCounts[id]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Roles */}
         <div className="mt-6">
           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-gray-500">
@@ -522,20 +543,8 @@ export default function InternshipTable({ internships, showFavorites = true, onl
               <th className="px-6 py-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
                 Location
               </th>
-              <th className="px-6 py-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (sortDir === null) setSortDir('desc');
-                    else if (sortDir === 'desc') setSortDir('asc');
-                    else setSortDir(null);
-                  }}
-                  className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 hover:text-gray-700 transition-colors"
-                  title="Click to sort by date"
-                >
-                  Posted
-                  <CaretIcon direction={sortDir === 'desc' ? 'down' : sortDir === 'asc' ? 'up' : null} className="h-3.5 w-3.5" />
-                </button>
+              <th className="px-6 py-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
+                Posted
               </th>
               <th className="px-6 py-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500">
                 Apply

@@ -1,7 +1,20 @@
 import { queryRecent } from '@/lib/listingsRepo';
-import { rankInternships } from '@/lib/ranker';
 import HomeContent from '@/components/HomeContent';
 import type { Internship } from '@/lib/types';
+
+// queryRecent is already newest-first, so the first copy of an apply URL is
+// the newest. Ranking used to do this dedupe and then cap the page at 1,000.
+function dedupeNewest(rows: Internship[]): Internship[] {
+  const seen = new Set<string>();
+  const unique: Internship[] = [];
+  for (const row of rows) {
+    const key = row.appUrl || row.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(row);
+  }
+  return unique;
+}
 
 export const revalidate = 3600;
 
@@ -24,7 +37,7 @@ export default async function Home() {
   // deliberate: an empty table means the scrape broke, and throwing lets ISR
   // keep serving the last good render instead of caching an empty page.
   const all = await queryRecent();
-  const internships: Internship[] = rankInternships(all);
+  const internships = dedupeNewest(all);
 
   return <HomeContent internships={internships} />;
 }

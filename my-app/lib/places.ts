@@ -96,6 +96,8 @@ const CITY_PROVINCE_CANADA_RE = new RegExp(
   `^([^,]+?),\\s*(${CA_PROVINCE_RE}),\\s*canada\\b`,
   'i',
 );
+// "Toronto, ON" omits the country. Province codes don't overlap US states.
+const CITY_PROVINCE_RE = new RegExp(`^([^,]+?),\\s*(${CA_PROVINCE_RE})\\b`, 'i');
 const CITY_STATE_RE = new RegExp(`^([^,]+?),\\s*(${US_STATE_RE})\\b`, 'i');
 const CITY_CANADA_RE = /^([^,]+?),\s*canada\b/i;
 const UNITED_STATES_RE = /^(?:united states|u\.s\.a\.?|u\.s\.|usa|us)\b/i;
@@ -176,6 +178,19 @@ function matchAtStart(text: string): Match | null {
     };
   }
 
+  const provinceOnly = CITY_PROVINCE_RE.exec(text);
+  if (provinceOnly && !isSkippableCity(provinceOnly[1])) {
+    return {
+      place: {
+        kind: 'city',
+        city: canonicalCity(provinceOnly[1]),
+        region: provinceOnly[2].toUpperCase(),
+        country: 'Canada',
+      },
+      length: provinceOnly[0].length,
+    };
+  }
+
   const united = UNITED_STATES_RE.exec(text);
   if (united) return { place: { kind: 'country', country: 'US' }, length: united[0].length };
 
@@ -215,6 +230,8 @@ export function parsePlaces(location: string): Place[] {
     let rest = segment.trim();
     while (rest.length > 0) {
       rest = rest.replace(/^[\s,;]+/, '');
+      // "CAN Kanata, ON" prefixes the city with the country.
+      rest = rest.replace(/^(?:can|canada)\s+(?=\S)/i, '');
       if (!rest) break;
       const matched = matchAtStart(rest);
       if (!matched) {

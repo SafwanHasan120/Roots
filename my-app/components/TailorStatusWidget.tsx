@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 export type TailorWidgetPhase = 'starting' | 'queued' | 'running' | 'done' | 'failed';
@@ -33,13 +32,9 @@ interface Props {
  * would otherwise pin a `fixed` child to the panel instead of the viewport.
  */
 export default function TailorStatusWidget({ jobs, onOpen, onDismiss }: Props) {
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted || jobs.length === 0) return null;
+  // Jobs only appear after a click, so this never hydrates with content.
+  // Skipping the portal on the server keeps `document` out of the first render.
+  if (jobs.length === 0 || typeof document === 'undefined') return null;
 
   return createPortal(
     <div

@@ -70,6 +70,9 @@ describe('places', () => {
     expect(locationMatches(location, 'region:CA-ON')).toBe(true);
     expect(locationMatches(location, 'city:san francisco|US-CA')).toBe(false);
     expect(locationMatches('Toronto, Canada', 'city:toronto|Canada')).toBe(true);
+    expect(locationMatches('Toronto, ON', 'city:toronto|Canada')).toBe(true);
+    expect(locationMatches('Toronto, ON', 'country:Canada')).toBe(true);
+    expect(locationMatches('CAN Kanata, ON', 'city:kanata|Canada')).toBe(true);
     expect(locationMatches('Montréal, Canada', 'city:montreal|Canada')).toBe(true);
   });
 

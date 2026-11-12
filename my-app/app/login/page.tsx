@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
-import TailorStatusWidget, { type TailorWidgetJob } from '@/components/TailorStatusWidget';
 
 export default function LoginPage() {
   const router = useRouter();

@@ -3,7 +3,7 @@ export interface Internship {
   company: string;
   companyUrl?: string; // from [Company](url) markdown link
   role: string;
-  location: string; // comma-joined if multi-location cell
+  location: string; // " | "-joined if multi-location; older rows are comma-joined
   appUrl: string;
   datePosted: string; // raw string for display
   dateMs: number; // parsed epoch ms for ranking (0 = unknown)

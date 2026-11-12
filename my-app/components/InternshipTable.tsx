@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import Fuse from 'fuse.js';
 import { useFavorites } from '@/context/FavoritesContext';
@@ -8,8 +8,11 @@ import { useAuth } from '@/context/AuthContext';
 import { useTailor } from '@/context/TailorContext';
 import { useResume } from '@/context/ResumeContext';
 import { formatDateToMonthDay } from '@/lib/scraper';
+import { locationMatches, topLocationPills } from '@/lib/places';
+import { ROLE_LABELS, rolesFor } from '@/lib/roleBuckets';
 import { tailorResume, TailorError, NeedsJobDescriptionError } from '@/lib/tailorClient';
 import JobDescriptionModal from '@/components/JobDescriptionModal';
+import TailorStatusWidget, { type TailorWidgetJob } from '@/components/TailorStatusWidget';
 import type { Internship } from '@/lib/types';
 
 interface Props {
@@ -17,18 +20,6 @@ interface Props {
   showFavorites?: boolean;
   onlyFavorites?: boolean;
 }
-
-// 8 role buckets, matched by regex against i.role.
-const ROLE_BUCKETS: { label: string; test: RegExp }[] = [
-  { label: 'SWE', test: /software|swe|engineer|developer|full.?stack|backend|front.?end/i },
-  { label: 'ML/AI', test: /machine learning|\bml\b|\bai\b|deep learning|nlp|computer vision|llm/i },
-  { label: 'Data', test: /data (scien|analy|engineer)|analytics|\bbi\b|business intelligence/i },
-  { label: 'Product', test: /product manage|\bpm\b|product intern/i },
-  { label: 'Quant', test: /quant|trading|trader|research analyst/i },
-  { label: 'DevOps/Infra', test: /devops|infra|platform|site reliability|\bsre\b|cloud|systems/i },
-  { label: 'Hardware', test: /hardware|electrical|embedded|firmware|asic|\bfpga\b|chip|silicon/i },
-  { label: 'Design/UX', test: /design|\bux\b|\bui\b|user experience|product design/i },
-];
 
 function toggle(set: Set<string>, value: string): Set<string> {
   const next = new Set(set);
@@ -179,6 +170,8 @@ export default function InternshipTable({ internships, showFavorites = true, onl
   const [sortDir, setSortDir] = useState<SortDirection>(null);
   const [tailoring, setTailoring] = useState<Map<string, boolean>>(new Map());
   const [tailorErrors, setTailorErrors] = useState<Map<string, string>>(new Map());
+  const [tailorNotices, setTailorNotices] = useState<TailorWidgetJob[]>([]);
+  const dismissTimers = useRef<Map<string, number>>(new Map());
   // Set when the worker reports it could not read the description from the
   // listing page; drives the paste modal.
   const [jdPrompt, setJdPrompt] = useState<{
@@ -190,6 +183,45 @@ export default function InternshipTable({ internships, showFavorites = true, onl
   const { user } = useAuth();
   const { getResult, setResult, openView } = useTailor();
   const { settings: resumeSettings } = useResume();
+
+  useEffect(() => {
+    const timers = dismissTimers.current;
+    return () => {
+      for (const handle of timers.values()) window.clearTimeout(handle);
+      timers.clear();
+    };
+  }, []);
+
+  const patchNotice = (notice: TailorWidgetJob) => {
+    setTailorNotices((prev) => {
+      const index = prev.findIndex((job) => job.id === notice.id);
+      if (index === -1) return [notice, ...prev];
+      const next = prev.slice();
+      next[index] = notice;
+      return next;
+    });
+  };
+
+  const clearNoticeTimer = (id: string) => {
+    const handle = dismissTimers.current.get(id);
+    if (handle === undefined) return;
+    window.clearTimeout(handle);
+    dismissTimers.current.delete(id);
+  };
+
+  const dismissNotice = (id: string) => {
+    clearNoticeTimer(id);
+    setTailorNotices((prev) => prev.filter((job) => job.id !== id));
+  };
+
+  const scheduleDismiss = (id: string, ms: number) => {
+    clearNoticeTimer(id);
+    const handle = window.setTimeout(() => {
+      dismissTimers.current.delete(id);
+      setTailorNotices((prev) => prev.filter((job) => job.id !== id));
+    }, ms);
+    dismissTimers.current.set(id, handle);
+  };
 
   // Reset filters when switching to Favorites view
   useEffect(() => {
@@ -214,21 +246,11 @@ export default function InternshipTable({ internships, showFavorites = true, onl
     [internships]
   );
 
-  // Top 20 location tags by frequency.
-  const locationTags = useMemo(() => {
-    const freq = new Map<string, number>();
-    for (const i of internships) {
-      const parts = i.location
-        .split(/,|\/|<br>/i)
-        .map((p) => p.trim())
-        .filter((p) => p && p !== '—');
-      for (const p of parts) freq.set(p, (freq.get(p) ?? 0) + 1);
-    }
-    return [...freq.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
-      .map(([loc, count]) => ({ loc, count }));
-  }, [internships]);
+  // Top 20 places by how many listings actually match, not comma fragments.
+  const locationTags = useMemo(
+    () => topLocationPills(internships.map((i) => i.location)),
+    [internships],
+  );
 
   const filtered = useMemo(() => {
     // query → fuse.search OR passthrough
@@ -236,20 +258,17 @@ export default function InternshipTable({ internships, showFavorites = true, onl
       ? fuse.search(query.trim()).map((r) => r.item)
       : internships;
 
-    // filter activeLocs (match any active location substring)
+    // filter activeLocs (match any selected place)
     if (activeLocs.size > 0) {
       rows = rows.filter((i) => {
-        const loc = i.location.toLowerCase();
-        for (const a of activeLocs) if (loc.includes(a.toLowerCase())) return true;
+        for (const key of activeLocs) if (locationMatches(i.location, key)) return true;
         return false;
       });
     }
 
-    // filter activeRoles (match any active bucket)
+    // filter activeRoles (match any selected discipline)
     if (activeRoles.size > 0) {
-      rows = rows.filter((i) =>
-        ROLE_BUCKETS.some((b) => activeRoles.has(b.label) && b.test.test(i.role))
-      );
+      rows = rows.filter((i) => rolesFor(i.role).some((label) => activeRoles.has(label)));
     }
 
     return rows;
@@ -326,6 +345,14 @@ export default function InternshipTable({ internships, showFavorites = true, onl
       return next;
     });
 
+    const notice = {
+      id: internshipId,
+      company: internship.company,
+      role: internship.role,
+    };
+    clearNoticeTimer(internshipId);
+    patchNotice({ ...notice, phase: 'starting' });
+
     try {
       // Enqueues a job and polls until it settles. The request no longer waits
       // on two Claude calls, so it cannot hit the platform request timeout.
@@ -335,6 +362,7 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         resumeSettings.latex,
         undefined,
         manualJd,
+        (status) => patchNotice({ ...notice, phase: status }),
       );
 
       setResult({
@@ -348,10 +376,13 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         pageCount: result.pageCount,
         tailoredAt: Date.now(),
       });
+      patchNotice({ ...notice, phase: 'done' });
+      scheduleDismiss(internshipId, 7000);
     } catch (error) {
       // Not a failure: the page hid its description, so ask for a paste. No
       // quota was spent, so the retry is free.
       if (error instanceof NeedsJobDescriptionError) {
+        dismissNotice(internshipId);
         setJdPrompt({ internship, message: error.message });
         return;
       }
@@ -362,6 +393,8 @@ export default function InternshipTable({ internships, showFavorites = true, onl
           : 'Something went wrong. Please try again.';
       console.error('[Tailor] Failed:', error);
       setTailorErrors((prev) => new Map(prev).set(internshipId, message));
+      patchNotice({ ...notice, phase: 'failed', message });
+      scheduleDismiss(internshipId, 9000);
     } finally {
       setTailoring((prev) => {
         const next = new Map(prev);
@@ -387,6 +420,7 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         open={jdPrompt !== null}
         company={jdPrompt?.internship.company ?? ''}
         role={jdPrompt?.internship.role ?? ''}
+        appUrl={jdPrompt?.internship.appUrl}
         message={jdPrompt?.message}
         onSubmit={handleJdSubmit}
         onCancel={() => setJdPrompt(null)}
@@ -411,17 +445,17 @@ export default function InternshipTable({ internships, showFavorites = true, onl
             Discipline
           </div>
           <div className="flex flex-wrap gap-2">
-            {ROLE_BUCKETS.map((b) => {
-              const on = activeRoles.has(b.label);
+            {ROLE_LABELS.map((label) => {
+              const on = activeRoles.has(label);
               return (
                 <button
-                  key={b.label}
+                  key={label}
                   type="button"
                   aria-pressed={on}
-                  onClick={() => setActiveRoles((s) => toggle(s, b.label))}
+                  onClick={() => setActiveRoles((s) => toggle(s, label))}
                   className={`${PILL_BASE} ${on ? PILL_ON : PILL_OFF}`}
                 >
-                  {b.label}
+                  {label}
                 </button>
               );
             })}
@@ -434,18 +468,18 @@ export default function InternshipTable({ internships, showFavorites = true, onl
             Location
           </div>
           <div className="flex flex-wrap gap-2">
-            {locationTags.map(({ loc, count }) => {
-              const on = activeLocs.has(loc);
+            {locationTags.map(({ key, label, count }) => {
+              const on = activeLocs.has(key);
               return (
                 <button
-                  key={loc}
+                  key={key}
                   type="button"
                   aria-pressed={on}
-                  onClick={() => setActiveLocs((s) => toggle(s, loc))}
+                  onClick={() => setActiveLocs((s) => toggle(s, key))}
                   className={`${PILL_BASE} ${on ? PILL_ON : PILL_OFF}`}
                 >
                   <PinIcon className={`h-3.5 w-3.5 ${on ? 'text-emerald-300' : 'text-gray-500'}`} />
-                  {loc}
+                  {label}
                   <span className={`ml-0.5 tabular-nums ${on ? 'text-white/60' : 'text-gray-500'}`}>
                     {count}
                   </span>
@@ -930,6 +964,14 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         </div>
       )}
 
+      <TailorStatusWidget
+        jobs={tailorNotices}
+        onOpen={(id) => {
+          openView(id);
+          dismissNotice(id);
+        }}
+        onDismiss={dismissNotice}
+      />
     </div>
   );
 }

@@ -388,7 +388,7 @@ async function scrapeRepo(url: string, scrapeState?: any, useNoStore: boolean = 
                 const appUrl = normalizeAppUrl(item.url || item.appUrl || '');
                 const company = item.company_name || item.company || '';
                 const location = Array.isArray(item.locations)
-                  ? item.locations.join(', ')
+                  ? item.locations.join(' | ')
                   : item.locations || item.location || '—';
                 // date_posted / date_updated are epoch *seconds*.
                 const epochSec = item.date_posted ?? item.date_updated;

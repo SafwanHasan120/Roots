@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 /**
  * Asks the user to paste a job description.
@@ -18,6 +19,8 @@ interface Props {
   open: boolean;
   company: string;
   role: string;
+  /** Listing URL, so the user can open the posting without dismissing this dialog. */
+  appUrl?: string;
   /** Message from the worker explaining why we are asking. */
   message?: string;
   onSubmit: (jobDescription: string) => void;
@@ -31,20 +34,29 @@ export default function JobDescriptionModal({
   open,
   company,
   role,
+  appUrl,
   message,
   onSubmit,
   onCancel,
 }: Props) {
   const [text, setText] = useState('');
+  const [mounted, setMounted] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Reset between listings so a previous paste never leaks into a new prompt.
+  // Portal target only exists in the browser.
   useEffect(() => {
-    if (open) {
+    setMounted(true);
+  }, []);
+
+  // Reset between listings so a previous paste never leaks into a new prompt.
+  // `mounted` is included because the textarea is portaled and does not exist
+  // until the first client commit.
+  useEffect(() => {
+    if (open && mounted) {
       setText('');
       textareaRef.current?.focus();
     }
-  }, [open]);
+  }, [open, mounted]);
 
   useEffect(() => {
     if (!open) return;
@@ -55,23 +67,38 @@ export default function JobDescriptionModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onCancel]);
 
-  if (!open) return null;
+  // Keep the dialog locked to the viewport while it is open.
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [open]);
+
+  if (!open || !mounted) return null;
 
   const trimmed = text.trim();
   const tooShort = trimmed.length > 0 && trimmed.length < MIN_LENGTH;
   const canSubmit = trimmed.length >= MIN_LENGTH;
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="jd-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
-    >
-      <div className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl">
+  return createPortal(
+    <div className="fixed inset-0 z-[80] overflow-y-auto" role="presentation">
+      <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+      <div
+        className="relative flex min-h-full items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="jd-modal-title"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onCancel();
+        }}
+      >
+      <div
+        className="my-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <h2
           id="jd-modal-title"
           className="font-serif text-xl font-semibold tracking-tight text-gray-900"
@@ -88,16 +115,35 @@ export default function JobDescriptionModal({
             "We couldn't read the job description from that page — some job boards load it with JavaScript. Paste it here and we'll tailor your resume against it."}
         </p>
 
+        {appUrl ? (
+          <a
+            href={appUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-gray-900 px-3.5 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-gray-800"
+          >
+            Open job listing
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+              <path d="M7 17 17 7" />
+              <path d="M7 7h10v10" />
+            </svg>
+          </a>
+        ) : null}
+
+        <p className="mt-3 text-xs text-gray-500">
+          Open the listing in a new tab, copy the description, then paste it below. This window stays open.
+        </p>
+
         <textarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          rows={12}
+          rows={10}
           placeholder="Paste the full job description, including requirements and qualifications…"
-          className="mt-4 w-full resize-y rounded-md border border-gray-300 p-3 font-mono text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+          className="mt-4 min-h-0 w-full flex-1 resize-none overflow-auto rounded-md border border-gray-300 p-3 font-mono text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
         />
 
-        <div className="mt-2 flex items-center justify-between text-xs">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs">
           <span className={tooShort ? 'text-amber-600' : 'text-gray-400'}>
             {trimmed.length === 0
               ? 'The more complete the description, the better the tailoring.'
@@ -126,6 +172,8 @@ export default function JobDescriptionModal({
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

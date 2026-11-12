@@ -51,6 +51,9 @@ export class NeedsJobDescriptionError extends Error {
   }
 }
 
+/** Statuses a job passes through before it settles. Fired only when the phase changes. */
+export type TailorLiveStatus = 'queued' | 'running';
+
 /** Poll cadence: fast enough to feel responsive, slow enough not to hammer the route. */
 const POLL_INTERVAL_MS = 2000;
 /** Ceiling. The worker timeout is 600s; this leaves room for queue wait. */
@@ -91,6 +94,8 @@ export async function tailorResume(
    * a NeedsJobDescriptionError; when present the worker skips extraction.
    */
   manualJd?: string,
+  /** Called as the job moves through the queue and into the worker. */
+  onStatus?: (status: TailorLiveStatus) => void,
 ): Promise<TailorJobResult> {
   const token = await user.getIdToken();
 
@@ -117,15 +122,19 @@ export async function tailorResume(
     );
   }
 
-  return pollJob(user, enqueued.jobId, signal);
+  onStatus?.('queued');
+  return pollJob(user, enqueued.jobId, signal, onStatus, 'queued');
 }
 
 async function pollJob(
   user: User,
   jobId: string,
   signal?: AbortSignal,
+  onStatus?: (status: TailorLiveStatus) => void,
+  reported: TailorLiveStatus | null = null,
 ): Promise<TailorJobResult> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let seen = reported;
 
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new TailorError('aborted', 'Cancelled.');
@@ -158,6 +167,14 @@ async function pollJob(
 
     // Recoverable, and distinct from failure: the user pastes the description
     // and resubmits. No quota was spent.
+    if (data.status === 'QUEUED' || data.status === 'RUNNING') {
+      const next: TailorLiveStatus = data.status === 'QUEUED' ? 'queued' : 'running';
+      if (next !== seen) {
+        seen = next;
+        onStatus?.(next);
+      }
+    }
+
     if (data.status === 'NEEDS_JD') {
       throw new NeedsJobDescriptionError(
         data.message ??

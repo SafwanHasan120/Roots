@@ -8,8 +8,6 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
-  GoogleAuthProvider,
-  signInWithPopup,
 } from 'firebase/auth';
 
 interface AuthContextValue {
@@ -17,7 +15,6 @@ interface AuthContextValue {
   loading: boolean;
   signUp: (email: string, password: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   error: string | null;
   clearError: () => void;
@@ -61,16 +58,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const signInWithGoogle = useCallback(async () => {
-    setError(null);
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (err) {
-      throw mapFirebaseError(err);
-    }
-  }, []);
-
   const logout = useCallback(async () => {
     setError(null);
     try {
@@ -89,7 +76,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     signUp,
     signIn,
-    signInWithGoogle,
     logout,
     error,
     clearError,
@@ -117,8 +103,6 @@ function mapFirebaseError(error: unknown): Error {
     'auth/invalid-credential': 'Invalid email or password.',
     'auth/operation-not-allowed': 'This operation is not allowed. Please contact support.',
     'auth/too-many-requests': 'Too many failed login attempts. Please try again later.',
-    'auth/popup-closed-by-user': 'Google sign-in was cancelled.',
-    'auth/popup-blocked': 'Please allow pop-ups to use Google sign-in.',
   };
 
   const code = err.code || '';

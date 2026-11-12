@@ -345,8 +345,7 @@ export default function InternshipTable({ internships, showFavorites = true, onl
         coverageAfter: result.coverageAfter,
         degraded: result.degraded,
         fitStatus: result.fitStatus,
-        fitPt: result.fitPt,
-        fitBudgetPt: result.fitBudgetPt,
+        pageCount: result.pageCount,
         tailoredAt: Date.now(),
       });
     } catch (error) {

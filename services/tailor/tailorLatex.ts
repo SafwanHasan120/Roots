@@ -10,18 +10,17 @@
  * connection could only be bounded by the platform's own request limit.
  */
 
-import { FIT_CONSTANTS, type FitEstimate } from '@app/latexFit';
-
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 8192;
 
 /**
- * Below the Lambda's 300s ceiling, leaving room to write the artifact and
- * settle the job. A timeout here surfaces as a retryable failure rather than
- * the invocation being killed mid-write.
+ * Below the worker's 600s ceiling. A job may compile, then make this call a
+ * second time to cut a long draft, so one call cannot take the whole window.
+ * A timeout surfaces as a retryable failure rather than the invocation being
+ * killed mid-write.
  */
-const REQUEST_TIMEOUT_MS = 240_000;
+export const REQUEST_TIMEOUT_MS = 180_000;
 
 export interface JdAnalysis {
   required_skills: string[];
@@ -127,101 +126,98 @@ async function callClaude(systemPrompt: string, userMessage: string): Promise<st
 }
 
 /**
- * A concrete page budget for the prompt.
+ * Shared by the analysis pass, the degraded pass, and the one-page shorten
+ * pass. Byte-identical on every call so the cached system block can hit.
  *
- * Expressed in lines and characters, never points. Rendered height is a step
- * function of bullet length: trimming a few characters usually costs nothing,
- * because cost only changes when a bullet crosses the wrap boundary. "Cut 30pt"
- * is therefore close to unactionable, while "keep this bullet under 118
- * characters" is a rule the model can follow.
- *
- * Costs ~60 input tokens (~$0.0002) and is what prevents the far more expensive
- * corrective round-trip.
+ * The length rules are writing rules, not a point budget. Page count is
+ * measured by compiling, and a second call (tailorLatexShorter) carries the
+ * real number when the first draft runs long.
  */
-export function fitConstraint(fit: FitEstimate): string {
-  if (fit.confidence !== 'high') return '';
+const SYSTEM_PROMPT = `You are a resume editor for internship and new-grad applications. Rewrite the LaTeX so the resume matches the role and still fits on one page.
 
-  const C = FIT_CONSTANTS;
-  const lines = [
-    '',
-    'Length budget (the resume must stay on ONE page):',
-    `- The page holds ${C.PAGE_BUDGET_PT} points. The input resume uses ${fit.totalPt}.`,
-    `- A bullet costs ${C.BULLET_FIRST_PT} points for its first line and ${C.BULLET_LINE_PT} for each additional line.`,
-    `- A line holds about ${C.CHARS_PER_LINE} visible characters, so a bullet longer than that wraps and costs another line.`,
-    '- Keep each rewritten bullet within the same number of lines as the original. Prefer shorter.',
-  ];
+How these resumes are read:
+- Recruiters and applicant tracking systems skim the top of a one-page resume and match plain text. Do not add columns, icons, skill bars, or a summary.
+- Within Experience and within Projects, move the role or project that best matches the job to the top, and move its matching bullets above the other bullets in that entry.
+- Reorder skills that are already on the resume so the overlap with the job comes first.
+- Do not reorder sections, rename sections, or add a section.
 
-  const multiline = fit.items.filter((i) => i.wrappedLines > 1).length;
-  if (multiline > 0) {
-    lines.push(
-      `- ${multiline} of the ${fit.items.length} bullets already wrap to 2+ lines; do not lengthen those.`,
-    );
-  }
+Bullet shape:
+- Start with a verb the candidate could actually claim, then what they built, then an existing number if the original bullet has one.
+- Each bullet stays on a single line and is never longer than the original bullet.
+- Cut filler such as "responsible for", "helped with", "various", and "worked on".
+- Do not upgrade scope. "helped" must not become "led", "architected", or "owned".
 
-  return lines.join('\n');
-}
+Example:
+- Weak: Helped with various backend tasks for the API
+- Acceptable, when the original work supports it: Built the authentication endpoints for the internal API
+- Not acceptable: Architected the authentication platform, improving latency by 40%
 
-export async function tailorLatexWithAnalysis(
-  latex: string,
-  _jdText: string,
-  analysis: JdAnalysis,
-  missing: string[],
-  fit?: FitEstimate,
-): Promise<string> {
-  const requirementsSummary = `Required Skills: ${analysis.required_skills.join(', ')}
-Preferred Skills: ${analysis.preferred_skills.join(', ')}
-Key Keywords: ${analysis.keywords.join(', ')}
-
-Missing Keywords in Resume: ${missing.join(', ')}`;
-
-  const systemPrompt = `You are a resume editor. Rewrite LaTeX to surface relevant keywords and experience.
-
-Rules:
+Integrity:
 - Never add sections, experience entries, projects, or skills not already in the input
 - Never introduce a technology, tool, or framework that does not already appear in the input, even when the job asks for it
 - Never alter or add a numeric value (dates, metrics, percentages)
 - Never add a bullet; the output must not contain more \\resumeItem entries than the input
-- Reorder and rewrite existing bullets to surface covered keywords from the job
-- If space is needed, delete the weakest bullet from the least relevant section
-- Output the complete .tex file only, starting with \\documentclass, no markdown fences
-${fit ? fitConstraint(fit) : ''}
+- Do not add blank lines
+- Do not change the preamble, margins, fonts, spacing, or macro definitions
+- If the resume cannot fit on one page, delete the least relevant bullet rather than shrinking the layout
+- Output the complete .tex file only, starting with \\documentclass, no markdown fences`;
 
-Focus on: ${missing.slice(0, 5).join(', ')}`;
+function listOrNone(items: string[]): string {
+  return items.length > 0 ? items.join(', ') : '(none)';
+}
 
-  const userMessage = `Requirements:
-${requirementsSummary}
+export async function tailorLatexWithAnalysis(
+  latex: string,
+  company: string,
+  role: string,
+  analysis: JdAnalysis,
+  covered: string[],
+  missing: string[],
+): Promise<string> {
+  const userMessage = `Company: ${company}
+Role: ${role}
+
+Required Skills: ${analysis.required_skills.join(', ')}
+Preferred Skills: ${analysis.preferred_skills.join(', ')}
+Key Keywords: ${analysis.keywords.join(', ')}
+
+Surface these, in the job's wording, only where the resume already supports them: ${listOrNone(covered)}
+Do not add these: ${listOrNone(missing)}
 
 ---RESUME---
 ${latex}`;
 
-  return callClaude(systemPrompt, userMessage);
+  return callClaude(SYSTEM_PROMPT, userMessage);
 }
 
 export async function tailorLatexDegraded(
   company: string,
   role: string,
   latex: string,
-  fit?: FitEstimate,
 ): Promise<string> {
-  const systemPrompt = `You are a resume editor. Make minor improvements without access to full job requirements.
-
-Rules:
-- Never add sections, experience entries, projects, or skills not already in the input
-- Never introduce a technology, tool, or framework that does not already appear in the input
-- Never alter or add a numeric value (dates, metrics, percentages)
-- Never add a bullet; the output must not contain more \\resumeItem entries than the input
-- Reorder and enhance existing bullets to highlight relevance to the role
-- If space is needed, delete the weakest bullet from the least relevant section
-- Output the complete .tex file only, starting with \\documentclass, no markdown fences
-${fit ? fitConstraint(fit) : ''}`;
-
   const userMessage = `Company: ${company}
 Role: ${role}
 
-Make the resume relevant to this role while preserving all existing content.
+Make the resume relevant to this role. You do not have the full job description, so do not guess tools or keywords that are not already on the resume.
 
 ---RESUME---
 ${latex}`;
 
-  return callClaude(systemPrompt, userMessage);
+  return callClaude(SYSTEM_PROMPT, userMessage);
+}
+
+/**
+ * Second pass, used only after a compile measured more than one page.
+ *
+ * Same system prompt as the first pass. The page count goes in the user
+ * message so the cached system block stays stable.
+ */
+export async function tailorLatexShorter(latex: string, pages: number): Promise<string> {
+  const userMessage = `The draft below compiled to ${pages} pages. It must be exactly 1 page.
+Delete the least relevant bullets and tighten the rest. Do not add anything. Keep every number and technology that remains.
+
+---RESUME---
+${latex}`;
+
+  return callClaude(SYSTEM_PROMPT, userMessage);
 }

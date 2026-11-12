@@ -10,10 +10,12 @@ export interface TailorResult {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded?: boolean;
-  /** Advisory one-page estimate; 'unknown' means the template was unrecognised. */
+  /**
+   * 'fits' and 'over' come from a compiled page count.
+   * 'unknown' means the compile failed, not that the resume fits.
+   */
   fitStatus?: 'fits' | 'over' | 'unknown';
-  fitPt?: number;
-  fitBudgetPt?: number;
+  pageCount?: number;
 }
 
 /**
@@ -131,8 +133,7 @@ export async function saveTailorResultToFirestore(uid: string, result: TailorRes
       // Firestore rejects `undefined`, so coerce rather than spreading the
       // optional fields straight through.
       fitStatus: result.fitStatus ?? null,
-      fitPt: result.fitPt ?? null,
-      fitBudgetPt: result.fitBudgetPt ?? null,
+      pageCount: result.pageCount ?? null,
       tailoredAt: Timestamp.fromMillis(result.tailoredAt),
     });
   } catch (error) {
@@ -168,10 +169,9 @@ export async function loadTailorResultsFromFirestore(uid: string): Promise<Map<s
         coverageAfter: data.coverageAfter,
         degraded: data.degraded,
         // Stored as null (Firestore rejects undefined) and absent entirely on
-        // results predating fit estimation; both read back as undefined.
+        // results predating compiled page counts; both read back as undefined.
         fitStatus: data.fitStatus ?? undefined,
-        fitPt: data.fitPt ?? undefined,
-        fitBudgetPt: data.fitBudgetPt ?? undefined,
+        pageCount: data.pageCount ?? undefined,
         tailoredAt: (data.tailoredAt as Timestamp)?.toMillis?.() || Date.now(),
       };
       results.set(data.internshipId, result);

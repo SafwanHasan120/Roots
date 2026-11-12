@@ -22,8 +22,14 @@ import { extractJD } from '@app/jdExtractor';
 import { analyzeJD } from '@app/jdAnalyzer';
 import { computeKeywordGap } from '@app/keywordGap';
 import { validateTailoredLatex } from '@app/latexValidator';
-import { estimateFit } from '@app/latexFit';
-import { tailorLatexWithAnalysis, tailorLatexDegraded, getAnthropicKey } from './tailorLatex.js';
+import { fitToOnePage } from './fitToOnePage.js';
+import { restorePreamble } from './resumeEdit.js';
+import {
+  tailorLatexWithAnalysis,
+  tailorLatexDegraded,
+  tailorLatexShorter,
+  getAnthropicKey,
+} from './tailorLatex.js';
 import { consume, release } from './rateLimit.js';
 import { markRunning, markDone, markFailed, markNeedsJd, getJob } from './jobs.js';
 
@@ -141,8 +147,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       coverageBefore: result.coverageBefore,
       coverageAfter: result.coverageAfter,
       degraded: result.degraded,
-      fitPt: result.fitPt,
-      fitBudgetPt: result.fitBudgetPt,
+      pageCount: result.pageCount,
       fitStatus: result.fitStatus,
     });
 
@@ -200,10 +205,12 @@ interface PipelineResult {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded: boolean;
-  /** Estimated height of the delivered resume, when the template was recognised. */
-  fitPt?: number;
-  fitBudgetPt?: number;
-  /** 'unknown' means the template was not recognised, not that it fits. */
+  /** Compiled PDF page count. Absent when the compile could not be measured. */
+  pageCount?: number;
+  /**
+   * 'fits' and 'over' come from a compiled page count.
+   * 'unknown' means the compile failed, not that the resume fits.
+   */
   fitStatus?: 'fits' | 'over' | 'unknown';
 }
 
@@ -267,11 +274,9 @@ async function runPipeline(input: {
   let coverageBefore = 0;
   let coverageAfter = 0;
   let degraded = false;
-
-  // Measured before the model runs so the budget can go into the prompt.
-  // Preventing overflow costs ~60 tokens; correcting it afterwards costs a
-  // second Claude call, so the pre-flight constraint is the whole strategy.
-  const inputFit = estimateFit(latex);
+  // Held so coverage is scored on the resume we actually deliver, after a
+  // shorten pass or a bullet deletion, not on the first draft.
+  let keywords: string[] | undefined;
 
   if (jdConfidence === 'high') {
     let analysis;
@@ -283,16 +288,18 @@ async function runPipeline(input: {
     }
 
     if (analysis) {
-      const beforeGap = computeKeywordGap(latex, analysis.keywords);
+      keywords = analysis.keywords;
+      const beforeGap = computeKeywordGap(latex, keywords);
       coverageBefore = beforeGap.coveragePct;
 
       try {
         tailoredLatex = await tailorLatexWithAnalysis(
           latex,
-          jdText,
+          internship.company,
+          internship.role,
           analysis,
+          beforeGap.covered,
           beforeGap.missing,
-          inputFit,
         );
       } catch (err) {
         throw new JobError(
@@ -302,18 +309,13 @@ async function runPipeline(input: {
         );
       }
 
-      coverageAfter = computeKeywordGap(tailoredLatex, analysis.keywords).coveragePct;
+      coverageAfter = computeKeywordGap(tailoredLatex, keywords).coveragePct;
     }
   }
 
   if (degraded || jdConfidence === 'low' || !tailoredLatex) {
     try {
-      tailoredLatex = await tailorLatexDegraded(
-        internship.company,
-        internship.role,
-        latex,
-        inputFit,
-      );
+      tailoredLatex = await tailorLatexDegraded(internship.company, internship.role, latex);
       degraded = true;
     } catch (err) {
       throw new JobError(
@@ -331,9 +333,13 @@ async function runPipeline(input: {
     );
   }
 
+  // Lock the preamble before validation so a margin edit cannot smuggle a
+  // layout change past the integrity check or the page-count compile.
+  const restored = restorePreamble(latex, tailoredLatex);
+
   // The guard against fabricated experience and altered numbers. Frozen module,
   // imported unchanged.
-  const validation = validateTailoredLatex(latex, tailoredLatex);
+  const validation = validateTailoredLatex(latex, restored);
   if (!validation.ok) {
     throw new JobError(
       'validation_failed',
@@ -342,36 +348,24 @@ async function runPipeline(input: {
     );
   }
 
-  // Advisory only: a resume that runs slightly long is still a useful artifact,
-  // and failing the job would deliver nothing while charging another Claude call
-  // on the retry. The estimate is also a heuristic with a known blind spot for
-  // unrecognised templates, which is the wrong thing to hard-gate on.
-  const outputFit = estimateFit(tailoredLatex);
-  if (outputFit.confidence === 'high' && !outputFit.fits) {
-    console.warn(
-      JSON.stringify({
-        msg: 'tailored resume exceeds one page',
-        totalPt: outputFit.totalPt,
-        budgetPt: outputFit.budgetPt,
-        linesOver: outputFit.linesOver,
-        inputPt: inputFit.confidence === 'high' ? inputFit.totalPt : null,
-      }),
-    );
-  } else if (outputFit.confidence === 'low') {
-    console.info(
-      JSON.stringify({ msg: 'fit not estimated', reasons: outputFit.reasons }),
-    );
+  // Compile, then one shorten pass, then bounded bullet deletion. A resume
+  // that still will not fit is delivered with fitStatus 'over' and the real
+  // page count; a compile that cannot be measured is 'unknown', not a failure.
+  const fitted = await fitToOnePage(latex, restored, (next, pages) =>
+    tailorLatexShorter(next, pages),
+  );
+
+  if (keywords) {
+    coverageAfter = computeKeywordGap(fitted.latex, keywords).coveragePct;
   }
 
   return {
-    latex: tailoredLatex,
+    latex: fitted.latex,
     coverageBefore: coverageBefore > 0 ? coverageBefore : undefined,
     coverageAfter: coverageAfter > 0 ? coverageAfter : undefined,
     degraded,
-    fitPt: outputFit.confidence === 'high' ? outputFit.totalPt : undefined,
-    fitBudgetPt: outputFit.confidence === 'high' ? outputFit.budgetPt : undefined,
-    fitStatus:
-      outputFit.confidence !== 'high' ? 'unknown' : outputFit.fits ? 'fits' : 'over',
+    pageCount: fitted.pageCount,
+    fitStatus: fitted.fitStatus,
   };
 }
 

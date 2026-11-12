@@ -25,10 +25,17 @@ vi.mock('@app/jdAnalyzer', () => ({ analyzeJD: (...a: unknown[]) => analyzeJD(..
 
 const tailorLatexWithAnalysis = vi.fn();
 const tailorLatexDegraded = vi.fn();
+const tailorLatexShorter = vi.fn();
 vi.mock('../tailorLatex.js', () => ({
   tailorLatexWithAnalysis: (...a: unknown[]) => tailorLatexWithAnalysis(...a),
   tailorLatexDegraded: (...a: unknown[]) => tailorLatexDegraded(...a),
+  tailorLatexShorter: (...a: unknown[]) => tailorLatexShorter(...a),
   getAnthropicKey: async () => 'test-key',
+}));
+
+const compileResume = vi.fn();
+vi.mock('../compileResume.js', () => ({
+  compileResume: (...a: unknown[]) => compileResume(...a),
 }));
 
 const consume = vi.fn();
@@ -105,6 +112,8 @@ describe('tailor worker', () => {
     });
     tailorLatexWithAnalysis.mockResolvedValue(TAILORED);
     tailorLatexDegraded.mockResolvedValue(TAILORED);
+    tailorLatexShorter.mockResolvedValue(TAILORED);
+    compileResume.mockResolvedValue({ ok: true, pages: 1 });
   });
 
   describe('success path', () => {
@@ -117,7 +126,10 @@ describe('tailor worker', () => {
         Key: 'jobs/user-1/job-1.tex',
         Body: TAILORED,
       });
-      expect(markDone).toHaveBeenCalled();
+      expect(markDone.mock.calls[0][1]).toMatchObject({
+        fitStatus: 'fits',
+        pageCount: 1,
+      });
     });
 
     it('charges the quota only after the artifact exists', async () => {
@@ -327,6 +339,32 @@ describe('tailor worker', () => {
 
       expect(consume).not.toHaveBeenCalled();
       expect(release).toHaveBeenCalled();
+      expect(compileResume).not.toHaveBeenCalled();
+    });
+
+    it('stores the shortened resume when the first compile is longer than one page', async () => {
+      const shorter = '\\documentclass{article}\\begin{document}Short\\end{document}';
+      compileResume
+        .mockResolvedValueOnce({ ok: true, pages: 2 })
+        .mockResolvedValueOnce({ ok: true, pages: 1 });
+      tailorLatexShorter.mockResolvedValue(shorter);
+
+      await handler(event());
+
+      expect(tailorLatexShorter).toHaveBeenCalledWith(TAILORED, 2);
+      expect(s3Send.mock.calls[0][0].input.Body).toBe(shorter);
+      expect(markDone.mock.calls[0][1]).toMatchObject({ fitStatus: 'fits', pageCount: 1 });
+    });
+
+    it('delivers the draft when the compile cannot be measured', async () => {
+      compileResume.mockResolvedValue({ ok: false, error: 'compile failed' });
+
+      await handler(event());
+
+      expect(tailorLatexShorter).not.toHaveBeenCalled();
+      expect(s3Send.mock.calls[0][0].input.Body).toBe(TAILORED);
+      expect(markDone.mock.calls[0][1]).toMatchObject({ fitStatus: 'unknown' });
+      expect(markDone.mock.calls[0][1].pageCount).toBeUndefined();
     });
   });
 });

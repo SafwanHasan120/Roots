@@ -1,14 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { estimateFit } from '@app/latexFit';
 
 /**
- * First tests for tailorLatex.ts.
- *
- * The prompts ARE the product here, and until now nothing observed them: worker
- * tests mock these functions wholesale and assert only that they were called.
- * So the model id, max_tokens, the system-block shape, and every rule in the
- * prompt could change silently.
+ * The prompts ARE the product here, and worker tests mock these functions
+ * wholesale. So the model id, max_tokens, the system-block shape, and every
+ * rule in the prompt are pinned here.
  */
 
 vi.mock('../tailorLatex.js', async (importOriginal) => importOriginal());
@@ -40,6 +36,11 @@ function systemText(): string {
   return body.system[0].text;
 }
 
+function userText(): string {
+  const body = lastBody() as { messages: Array<{ content: string }> };
+  return body.messages[0].content;
+}
+
 beforeEach(() => {
   vi.resetModules();
   process.env.ANTHROPIC_API_KEY = 'test-key';
@@ -54,8 +55,8 @@ beforeEach(() => {
 
 describe('tailorLatexWithAnalysis', () => {
   it('pins the Claude call parameters', async () => {
-    const { tailorLatexWithAnalysis } = await import('../tailorLatex.js');
-    await tailorLatexWithAnalysis(FIXTURE, 'jd text', ANALYSIS, ['Kubernetes']);
+    const { tailorLatexWithAnalysis, REQUEST_TIMEOUT_MS } = await import('../tailorLatex.js');
+    await tailorLatexWithAnalysis(FIXTURE, 'Acme', 'SWE Intern', ANALYSIS, ['Python'], ['Kubernetes']);
 
     const body = lastBody();
     expect(body.model).toBe('claude-sonnet-4-6');
@@ -65,55 +66,54 @@ describe('tailorLatexWithAnalysis', () => {
     // The API rejects a bare object here with "system: Input should be a valid
     // array" — this shape is load-bearing, not stylistic.
     expect(Array.isArray(body.system)).toBe(true);
+    // Two calls plus compiles have to fit in the 600s worker.
+    expect(REQUEST_TIMEOUT_MS).toBe(180_000);
   });
 
-  it('forbids inventing content', async () => {
+  it('forbids inventing content and upgrading scope', async () => {
     const { tailorLatexWithAnalysis } = await import('../tailorLatex.js');
-    await tailorLatexWithAnalysis(FIXTURE, 'jd', ANALYSIS, ['Kubernetes']);
+    await tailorLatexWithAnalysis(FIXTURE, 'Acme', 'SWE Intern', ANALYSIS, ['Python'], ['Kubernetes']);
 
     const system = systemText();
     expect(system).toMatch(/Never add sections, experience entries, projects, or skills/);
     expect(system).toMatch(/Never alter or add a numeric value/);
-    // Added because the model was observed adding skills from the JD despite
-    // the blanket "never add" rule.
     expect(system).toMatch(/Never introduce a technology, tool, or framework/);
     expect(system).toMatch(/Never add a bullet/);
+    expect(system).toMatch(/must not become "led", "architected", or "owned"/);
+    expect(system).toMatch(/Do not change the preamble/);
+    expect(system).toMatch(/one page/);
+    expect(system).toMatch(/single line/);
+    // A point budget is not a rule the model can follow. Page count is measured
+    // by compiling, not by quoting constants.
+    expect(system).not.toMatch(/\d+ points/);
+    expect(system).not.toMatch(/Focus on:/);
   });
 
-  it('sends the page budget when the template is recognised', async () => {
+  it('aims at overlap and names the keywords that must not be added', async () => {
     const { tailorLatexWithAnalysis } = await import('../tailorLatex.js');
-    const fit = estimateFit(FIXTURE);
-    expect(fit.confidence).toBe('high');
+    await tailorLatexWithAnalysis(
+      FIXTURE,
+      'Acme',
+      'SWE Intern',
+      ANALYSIS,
+      ['Python', 'REST'],
+      ['Kubernetes'],
+    );
 
-    await tailorLatexWithAnalysis(FIXTURE, 'jd', ANALYSIS, ['Kubernetes'], fit);
-
-    const system = systemText();
-    expect(system).toMatch(/ONE page/);
-    // Expressed in characters and lines, never points: height is a step function
-    // of bullet length, so "cut N points" is not actionable.
-    expect(system).toContain('118 visible characters');
-    expect(system).toContain(String(fit.totalPt));
-  });
-
-  it('omits the budget when the template is unrecognised', async () => {
-    const { tailorLatexWithAnalysis } = await import('../tailorLatex.js');
-    const fit = estimateFit('\\resumeItem{no document wrapper}');
-    expect(fit.confidence).toBe('low');
-
-    await tailorLatexWithAnalysis(FIXTURE, 'jd', ANALYSIS, ['Kubernetes'], fit);
-
-    // A budget derived from constants that do not describe this document would
-    // be a fabricated instruction.
-    expect(systemText()).not.toMatch(/ONE page/);
+    const user = userText();
+    expect(user).toContain('Surface these');
+    expect(user).toContain('Python, REST');
+    expect(user).toContain('Do not add these: Kubernetes');
+    expect(user).toContain('Company: Acme');
+    expect(user).toContain('Role: SWE Intern');
   });
 
   it('carries the resume in the user message', async () => {
     const { tailorLatexWithAnalysis } = await import('../tailorLatex.js');
-    await tailorLatexWithAnalysis(FIXTURE, 'jd', ANALYSIS, ['Kubernetes']);
+    await tailorLatexWithAnalysis(FIXTURE, 'Acme', 'SWE Intern', ANALYSIS, ['Python'], ['Kubernetes']);
 
-    const body = lastBody() as { messages: Array<{ content: string }> };
-    expect(body.messages[0].content).toContain('---RESUME---');
-    expect(body.messages[0].content).toContain('\\documentclass');
+    expect(userText()).toContain('---RESUME---');
+    expect(userText()).toContain('\\documentclass');
   });
 
   it('treats a truncated completion as an error', async () => {
@@ -127,7 +127,7 @@ describe('tailorLatexWithAnalysis', () => {
 
     // Silently returning a half-written .tex would corrupt the resume.
     await expect(
-      tailorLatexWithAnalysis(FIXTURE, 'jd', ANALYSIS, ['Kubernetes']),
+      tailorLatexWithAnalysis(FIXTURE, 'Acme', 'SWE Intern', ANALYSIS, ['Python'], ['Kubernetes']),
     ).rejects.toThrow(/max_tokens/);
   });
 
@@ -136,19 +136,40 @@ describe('tailorLatexWithAnalysis', () => {
     const { tailorLatexWithAnalysis } = await import('../tailorLatex.js');
 
     await expect(
-      tailorLatexWithAnalysis(FIXTURE, 'jd', ANALYSIS, ['Kubernetes']),
+      tailorLatexWithAnalysis(FIXTURE, 'Acme', 'SWE Intern', ANALYSIS, ['Python'], ['Kubernetes']),
     ).rejects.toThrow(/bad model id/);
   });
 });
 
 describe('tailorLatexDegraded', () => {
-  it('carries the same integrity rules and accepts a budget', async () => {
+  it('uses the same integrity rules and does not pretend to know the job', async () => {
     const { tailorLatexDegraded } = await import('../tailorLatex.js');
-    await tailorLatexDegraded('Acme', 'SWE Intern', FIXTURE, estimateFit(FIXTURE));
+    await tailorLatexDegraded('Acme', 'SWE Intern', FIXTURE);
 
     const system = systemText();
     expect(system).toMatch(/Never introduce a technology, tool, or framework/);
     expect(system).toMatch(/Never add a bullet/);
-    expect(system).toMatch(/ONE page/);
+    expect(system).toMatch(/one page/);
+    expect(system).toMatch(/must not become "led", "architected", or "owned"/);
+
+    const user = userText();
+    expect(user).toContain('do not guess tools or keywords');
+    expect(user).not.toMatch(/preserving all existing content/);
+  });
+});
+
+describe('tailorLatexShorter', () => {
+  it('keeps the cached system prompt and puts the compiled page count in the user message', async () => {
+    const { tailorLatexWithAnalysis, tailorLatexShorter } = await import('../tailorLatex.js');
+    await tailorLatexWithAnalysis(FIXTURE, 'Acme', 'SWE Intern', ANALYSIS, ['Python'], ['Kubernetes']);
+    const firstSystem = systemText();
+
+    fetchMock.mockClear();
+    await tailorLatexShorter(FIXTURE, 2);
+
+    expect(systemText()).toBe(firstSystem);
+    expect(userText()).toMatch(/compiled to 2 pages/);
+    expect(userText()).toMatch(/exactly 1 page/);
+    expect(userText()).toMatch(/Delete the least relevant bullets/);
   });
 });

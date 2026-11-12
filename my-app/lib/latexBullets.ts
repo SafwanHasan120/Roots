@@ -1,7 +1,7 @@
 /**
  * Bullet extraction for sb2nov/Jake-template resumes.
  *
- * Shared by latexDiff.ts, latexFit.ts and changeDetect.ts so there is exactly
+ * Shared by latexDiff.ts, changeDetect.ts, and the one-page trim so there is exactly
  * one definition of "what counts as a bullet". The three disagreed before:
  * latexDiff matched lines starting with `\item` and therefore extracted
  * **nothing** from a real resume, because `'\resumeItem'.startsWith('\item')`

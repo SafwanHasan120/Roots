@@ -30,10 +30,12 @@ export interface JobRecord {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded?: boolean;
-  /** Estimated rendered height, in points, when the template was recognised. */
-  fitPt?: number;
-  fitBudgetPt?: number;
-  /** 'unknown' means the template was unrecognised — NOT that it fits. */
+  /** Compiled PDF page count. Absent when the compile could not be measured. */
+  pageCount?: number;
+  /**
+   * 'fits' and 'over' come from a compiled page count.
+   * 'unknown' means the compile failed — NOT that the resume fits.
+   */
   fitStatus?: 'fits' | 'over' | 'unknown';
   /** User-safe failure message. */
   error?: string;
@@ -104,8 +106,7 @@ export async function markDone(
     coverageBefore?: number;
     coverageAfter?: number;
     degraded?: boolean;
-    fitPt?: number;
-    fitBudgetPt?: number;
+    pageCount?: number;
     fitStatus?: 'fits' | 'over' | 'unknown';
   },
   now: number = Date.now(),
@@ -117,7 +118,7 @@ export async function markDone(
       UpdateExpression:
         'SET #status = :done, artifactKey = :key, updatedAt = :now, ' +
         'coverageBefore = :before, coverageAfter = :after, degraded = :degraded, ' +
-        'fitPt = :fitPt, fitBudgetPt = :fitBudget, fitStatus = :fitStatus',
+        'pageCount = :pageCount, fitStatus = :fitStatus',
       ConditionExpression: 'attribute_exists(PK)',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: {
@@ -126,10 +127,10 @@ export async function markDone(
         ':before': result.coverageBefore ?? null,
         ':after': result.coverageAfter ?? null,
         ':degraded': result.degraded ?? false,
-        // Explicit nulls, matching the coverage convention above: the attribute
+        // Explicit null, matching the coverage convention above: the attribute
         // is always present on a DONE job so readers need not special-case it.
-        ':fitPt': result.fitPt ?? null,
-        ':fitBudget': result.fitBudgetPt ?? null,
+        // Null means the compile could not be measured, which is not "one page".
+        ':pageCount': result.pageCount ?? null,
         ':fitStatus': result.fitStatus ?? 'unknown',
         ':now': now,
       },

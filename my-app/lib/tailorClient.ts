@@ -13,12 +13,11 @@ export interface TailorJobResult {
   coverageBefore?: number;
   coverageAfter?: number;
   degraded?: boolean;
-  /** Estimated rendered height in points, when the template was recognised. */
-  fitPt?: number;
-  fitBudgetPt?: number;
+  /** Compiled PDF page count. Absent when the compile could not be measured. */
+  pageCount?: number;
   /**
-   * Advisory one-page estimate. 'unknown' means the template was not
-   * recognised — it does NOT mean the resume fits.
+   * 'fits' and 'over' come from a compiled page count.
+   * 'unknown' means the compile failed — it does NOT mean the resume fits.
    */
   fitStatus?: 'fits' | 'over' | 'unknown';
 }
@@ -54,8 +53,8 @@ export class NeedsJobDescriptionError extends Error {
 
 /** Poll cadence: fast enough to feel responsive, slow enough not to hammer the route. */
 const POLL_INTERVAL_MS = 2000;
-/** Ceiling. The worker's own timeout is 300s; this allows for queue wait too. */
-const POLL_TIMEOUT_MS = 6 * 60 * 1000;
+/** Ceiling. The worker timeout is 600s; this leaves room for queue wait. */
+const POLL_TIMEOUT_MS = 12 * 60 * 1000;
 
 function friendlyMessage(code: string, fallback?: string): string {
   switch (code) {
@@ -149,8 +148,7 @@ async function pollJob(
       coverageBefore?: number;
       coverageAfter?: number;
       degraded?: boolean;
-      fitPt?: number;
-      fitBudgetPt?: number;
+      pageCount?: number;
       fitStatus?: 'fits' | 'over' | 'unknown';
     };
 
@@ -188,8 +186,7 @@ async function pollJob(
         coverageBefore: data.coverageBefore,
         coverageAfter: data.coverageAfter,
         degraded: data.degraded,
-        fitPt: data.fitPt,
-        fitBudgetPt: data.fitBudgetPt,
+        pageCount: data.pageCount,
         fitStatus: data.fitStatus,
       };
     }

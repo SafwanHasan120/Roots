@@ -88,9 +88,9 @@ export class TailorStack extends Stack {
 
     const dlq = new Queue(this, 'TailorDlq', { retentionPeriod: Duration.days(14) });
 
-    // Generous: a cold start plus a slow Claude completion. The worker's own
-    // 240s request timeout fires well before this.
-    const workerTimeout = Duration.seconds(300);
+    // Draft, a compile, and one shorten pass. Each Claude call is capped at 180s
+    // and each compile at 45s, so 600s covers both with room to write the artifact.
+    const workerTimeout = Duration.seconds(600);
 
     const queue = new Queue(this, 'TailorQueue', {
       // Must exceed the worker timeout, or SQS redelivers a job that is still
@@ -157,13 +157,40 @@ export class TailorStack extends Stack {
       ...common,
       entry: path.join(SERVICES, 'worker.ts'),
       handler: 'handler',
-      // Network-bound on Claude; extra memory buys CPU a blocked socket cannot
-      // use. Raise only if LaTeX validation proves heavy on large resumes.
-      memorySize: 512,
+      // Tectonic compiles the resume to count pages. 1024 MB leaves room for
+      // the binary and the TeX bundle cache on top of the Node process.
+      memorySize: 1024,
       timeout: workerTimeout,
       environment: {
         ...common.environment,
         ARTIFACT_BUCKET: artifacts.bucketName,
+      },
+      bundling: {
+        ...bundling,
+        commandHooks: {
+          beforeBundling(): string[] {
+            return [];
+          },
+          beforeInstall(): string[] {
+            return [];
+          },
+          // The bundler image is not the Lambda architecture. Download the
+          // aarch64 binary by URL; do not trust `uname -m` inside the container.
+          // The binary is not committed.
+          afterBundling(_inputDir: string, outputDir: string): string[] {
+            const url =
+              'https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.15.0/tectonic-0.15.0-aarch64-unknown-linux-musl.tar.gz';
+            // Per-asset path. A shared /tmp file races when two stacks bundle
+            // the worker at the same time, and tar then sees a half-written gzip.
+            const archive = `${outputDir}/tectonic.tar.gz`;
+            return [
+              `curl -fsSL --retry 3 --retry-delay 1 "${url}" -o "${archive}"`,
+              `tar -xzf "${archive}" -C "${outputDir}"`,
+              `rm -f "${archive}"`,
+              `chmod 755 "${outputDir}/tectonic"`,
+            ];
+          },
+        },
       },
     });
 

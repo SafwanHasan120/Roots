@@ -158,7 +158,7 @@ describe('TailorStack', () => {
       // race on the same quota reservation.
       const queues = template.findResources('AWS::SQS::Queue');
       const work = Object.values(queues).find((q) => q.Properties?.RedrivePolicy);
-      expect(work?.Properties.VisibilityTimeout).toBe(1800); // 300s * 6
+      expect(work?.Properties.VisibilityTimeout).toBe(3600); // 600s * 6
     });
   });
 
@@ -177,11 +177,12 @@ describe('TailorStack', () => {
       }
     });
 
-    it('gives the worker room for a slow Claude completion', () => {
+    it('gives the worker room for a compile and a second Claude pass', () => {
       const worker = ourFunctions(template).find(
         ([, f]) => f.Properties.Environment?.Variables?.ARTIFACT_BUCKET !== undefined,
       );
-      expect(worker?.[1].Properties.Timeout).toBe(300);
+      expect(worker?.[1].Properties.Timeout).toBe(600);
+      expect(worker?.[1].Properties.MemorySize).toBe(1024);
     });
 
     it('keeps the enqueue path fast', () => {
